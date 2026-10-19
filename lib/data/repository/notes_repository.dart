@@ -8,8 +8,10 @@ import '../../core/text/headings.dart';
 import '../../core/text/search_text.dart';
 import '../../core/text/turkish_collation.dart';
 import '../db/database.dart';
+import 'import_records.dart';
 import 'note_query.dart';
 
+export 'import_records.dart';
 export 'note_query.dart';
 
 class NotFoundException implements Exception {
@@ -781,6 +783,189 @@ class NotesRepository {
           ..where((nt) => nt.tagId.equals(tagId) & nt.deletedAt.isNull()))
         .get();
     return rows.map((r) => r.noteId).toList();
+  }
+
+  // ----------------------------------------------------- İçe aktarma
+
+  /// Dışarıdan gelen veriyi ekler. Mevcut kayıtların üzerine asla yazmaz:
+  ///  - kimliği zaten bulunan not ve klasörler atlanır,
+  ///  - etiketler önce kimliğe, sonra ada göre eşleştirilir.
+  /// Notlar orijinal kimlik ve tarihleriyle eklenir ve change_log'a yazılır
+  /// (senkronizasyonda diğer cihazlara da gider).
+  ///
+  /// [dryRun] true ise hiçbir şey yazılmaz; yalnızca ne ekleneceği hesaplanır.
+  Future<ImportResult> importBatch(ImportBatch b, {bool dryRun = false}) {
+    Future<ImportResult> run() async {
+      final result = ImportResult();
+      final now = _now();
+      final hlc = dryRun ? '' : _clock.tick().pack();
+
+      // ---- Klasörler (önce üst klasörler)
+      final folderIds =
+          (await _db.select(_db.folders).get()).map((f) => f.id).toSet();
+      for (final f in _parentFirst(b.folders)) {
+        if (folderIds.contains(f.id)) continue;
+        final parent =
+            f.parentId != null && folderIds.contains(f.parentId) ? f.parentId : null;
+        if (!dryRun) {
+          await _db.into(_db.folders).insert(FoldersCompanion.insert(
+                id: f.id,
+                parentId: Value(parent),
+                name: f.name,
+                color: Value(f.color),
+                position: Value(f.position),
+                createdAt: now,
+                updatedAt: now,
+                hlc: hlc,
+              ));
+          await _log('folder', f.id, {
+            'parent_id': parent,
+            'name': f.name,
+            'color': f.color,
+            'position': f.position,
+            'created_at': now,
+          }, hlc);
+        }
+        folderIds.add(f.id);
+        result.foldersAdded++;
+      }
+
+      // ---- Etiketler
+      final allTags = await _db.select(_db.tags).get();
+      final tagIds = allTags.map((t) => t.id).toSet();
+      final byName = {
+        for (final t in allTags)
+          if (t.deletedAt == null) t.name.toLowerCase(): t.id,
+      };
+
+      Future<String> ensureTag(String name, {String? id, String? color}) async {
+        if (id != null && tagIds.contains(id)) {
+          byName.putIfAbsent(name.toLowerCase(), () => id);
+          return id;
+        }
+        final existing = byName[name.toLowerCase()];
+        if (existing != null) return existing;
+
+        final newId = id ?? uuidV7(millis: now);
+        if (!dryRun) {
+          await _db.into(_db.tags).insert(TagsCompanion.insert(
+                id: newId,
+                name: name,
+                color: Value(color),
+                createdAt: now,
+                updatedAt: now,
+                hlc: hlc,
+              ));
+          await _log('tag', newId,
+              {'name': name, 'color': color, 'parent_id': null, 'created_at': now},
+              hlc);
+        }
+        tagIds.add(newId);
+        byName[name.toLowerCase()] = newId;
+        result.tagsAdded++;
+        return newId;
+      }
+
+      for (final t in b.tags) {
+        await ensureTag(t.name, id: t.id, color: t.color);
+      }
+
+      // ---- Notlar
+      final noteIds = (await (_db.selectOnly(_db.notes)
+                    ..addColumns([_db.notes.id]))
+                  .map((r) => r.read(_db.notes.id)!)
+                  .get())
+          .toSet();
+
+      for (final n in b.notes) {
+        if (noteIds.contains(n.id)) {
+          result.notesSkipped++;
+          continue;
+        }
+        final folderId =
+            n.folderId != null && folderIds.contains(n.folderId) ? n.folderId : null;
+        final noteTagIds = <String>{};
+        for (final name in n.tagNames) {
+          if (name.trim().isEmpty) continue;
+          noteTagIds.add(await ensureTag(name.trim()));
+        }
+
+        if (!dryRun) {
+          await _db.into(_db.notes).insert(NotesCompanion.insert(
+                id: n.id,
+                folderId: Value(folderId),
+                kind: Value(n.kind),
+                type: Value(n.type),
+                title: Value(n.title),
+                body: Value(n.body),
+                color: Value(n.color),
+                pinned: Value(n.pinned),
+                archived: Value(n.archived),
+                sizeBytes: Value(_size(n.title, n.body)),
+                createdAt: n.createdAt,
+                updatedAt: n.updatedAt,
+                hlc: hlc,
+              ));
+          await _log('note', n.id, {
+            'folder_id': folderId,
+            'kind': n.kind.name,
+            'type': n.type.name,
+            'title': n.title,
+            'body': n.body,
+            'color': n.color,
+            'pinned': n.pinned,
+            'archived': n.archived,
+            'locked': false,
+            'created_at': n.createdAt,
+          }, hlc);
+          for (final tagId in noteTagIds) {
+            await _db.into(_db.noteTags).insertOnConflictUpdate(
+                  NoteTagsCompanion.insert(
+                    noteId: n.id,
+                    tagId: tagId,
+                    createdAt: now,
+                    updatedAt: now,
+                    deletedAt: const Value(null),
+                    hlc: hlc,
+                  ),
+                );
+            await _log('note_tag', '${n.id}|$tagId', {'deleted_at': null}, hlc);
+          }
+          await _rebuildHeadings(n.id, n.body);
+          await _reindex(n.id);
+        }
+        noteIds.add(n.id);
+        result.notesAdded++;
+      }
+      return result;
+    }
+
+    return dryRun ? run() : _db.transaction(run);
+  }
+
+  /// Üst klasörler alt klasörlerden önce gelecek şekilde sıralar.
+  static List<ImportFolder> _parentFirst(List<ImportFolder> folders) {
+    final ids = {for (final f in folders) f.id};
+    final placed = <String>{};
+    final out = <ImportFolder>[];
+    var remaining = [...folders];
+    var progress = true;
+    while (remaining.isNotEmpty && progress) {
+      progress = false;
+      final next = <ImportFolder>[];
+      for (final f in remaining) {
+        final p = f.parentId;
+        if (p == null || !ids.contains(p) || placed.contains(p)) {
+          out.add(f);
+          placed.add(f.id);
+          progress = true;
+        } else {
+          next.add(f);
+        }
+      }
+      remaining = next;
+    }
+    return out..addAll(remaining); // döngü varsa kalanlar köke düşer
   }
 
   // ------------------------------------------- Cihaz ayarları ve yedekleme

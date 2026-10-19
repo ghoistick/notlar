@@ -152,8 +152,10 @@ String noteToMarkdown(
     ..writeln('updated: ${isoWithOffset(DateTime.fromMillisecondsSinceEpoch(note.updatedAt))}')
     ..writeln('---')
     ..writeln()
-    ..write(note.body);
-  if (!note.body.endsWith('\n')) b.writeln();
+    // Gövdeden sonra her zaman tek bir satır sonu yazılır; geri okurken
+    // yalnızca bu satır sonu atılır ve gövde birebir korunur.
+    ..write(note.body)
+    ..write('\n');
   return b.toString();
 }
 

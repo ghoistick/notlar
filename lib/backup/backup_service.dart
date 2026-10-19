@@ -16,6 +16,7 @@ import '../core/hlc/hlc.dart';
 import '../data/repository/notes_repository.dart';
 import '../ui/home/home_state.dart';
 import 'backup_format.dart';
+import 'restore.dart';
 import 'retention.dart';
 import 'seven_zip.dart';
 
@@ -25,6 +26,11 @@ class BackupException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Kayıtlı yedek parolası bu arşivi açmadı; kullanıcıdan parola istenmeli.
+class BackupPasswordRequired implements Exception {
+  const BackupPasswordRequired();
 }
 
 /// Otomatik şifreli yedekleme.
@@ -130,6 +136,30 @@ class BackupService extends ChangeNotifier {
     final clear = await BlobCipher()
         .decrypt(key, base64Decode(stored), aad: _passwordAad);
     return utf8.decode(clear);
+  }
+
+  // --------------------------------------------------------- Geri yükleme
+
+  /// Yedek arşivini açıp içeriğini okur. [password] verilmezse kayıtlı
+  /// yedek parolası denenir; o da açmazsa [BackupPasswordRequired] fırlatılır.
+  Future<BackupContent> readBackup(String archivePath, {String? password}) async {
+    final exe = sevenZipPath ?? await SevenZip.locate();
+    if (exe == null) {
+      throw const BackupException(
+          '7-Zip bulunamadı. Yedeği açmak için 7-zip.org adresinden kur.');
+    }
+    final pw = password ?? await _readPassword();
+    if (pw == null) throw const BackupPasswordRequired();
+
+    final Uint8List tar;
+    try {
+      tar = await SevenZip(exe).extractSingle(archivePath, backupInnerName, pw);
+    } on SevenZipException {
+      if (password == null) throw const BackupPasswordRequired();
+      throw const BackupException(
+          'Yedek açılamadı. Parola yanlış ya da dosya bozuk olabilir.');
+    }
+    return parseBackupTar(tar);
   }
 
   // -------------------------------------------------------------- Yedek

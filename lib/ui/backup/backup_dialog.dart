@@ -7,18 +7,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../backup/backup_service.dart';
 import '../common/format.dart';
 import '../lock/lock_widgets.dart';
+import 'restore_flow.dart';
 
-Future<void> showBackupDialog(BuildContext context, WidgetRef ref) {
-  final service = ref.read(backupServiceProvider);
+/// Pencere kendi `ref`ini kullanır; çağıran widget kapanmış olsa da
+/// (ör. telefonda çekmece) sorunsuz çalışır.
+Future<void> showBackupDialog(BuildContext context, [WidgetRef? _]) {
   return showDialog<void>(
     context: context,
-    builder: (_) => _BackupDialog(service: service),
+    builder: (_) => Consumer(
+      builder: (ctx, ref, __) => _BackupDialog(
+        service: ref.watch(backupServiceProvider),
+        onRestore: () => restoreFromBackup(ctx, ref),
+      ),
+    ),
   );
 }
 
 class _BackupDialog extends StatelessWidget {
   final BackupService service;
-  const _BackupDialog({required this.service});
+  final VoidCallback onRestore;
+  const _BackupDialog({required this.service, required this.onRestore});
 
   Future<void> _changeDirectory(BuildContext context) async {
     final dir = await getDirectoryPath(
@@ -142,6 +150,22 @@ class _BackupDialog extends StatelessWidget {
                       'son yedeği saklanır; daha eskiler silinir.',
                       style: muted,
                     ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('Geri yükleme',
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Bir yedekteki notlardan uygulamada bulunmayanları geri '
+                    'getirir. Mevcut notların üzerine yazılmaz.',
+                    style: muted,
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: s.sevenZipPath == null || s.running ? null : onRestore,
+                    icon: const Icon(Icons.restore, size: 18),
+                    label: const Text('Yedekten geri yükle…'),
                   ),
                 ],
               ),
