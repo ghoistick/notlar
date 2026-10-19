@@ -71,7 +71,12 @@ abstract final class AppTheme {
       outlineVariant: p.line,
     );
 
-    final base = ThemeData(brightness: brightness, useMaterial3: true);
+    // Uygulamaya gömülü yazı tipi; her cihazda notlar aynı görünür.
+    final base = ThemeData(
+      brightness: brightness,
+      useMaterial3: true,
+      fontFamily: 'IBM Plex Sans',
+    );
     final text = base.textTheme.apply(bodyColor: p.ink, displayColor: p.ink);
 
     final radius = BorderRadius.circular(8);

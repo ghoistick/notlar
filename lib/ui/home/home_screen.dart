@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../backup/backup_service.dart';
 import '../../data/db/tables.dart';
 import 'editor_pane.dart';
 import 'home_state.dart';
@@ -18,6 +19,9 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Kasa açık kaldığı sürece otomatik yedekleme çalışır.
+    ref.watch(backupServiceProvider);
+
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>

@@ -127,8 +127,8 @@ class _RecoveryKeyViewState extends State<_RecoveryKeyView> {
             widget.recoveryKey,
             textAlign: TextAlign.center,
             style: theme.textTheme.titleMedium?.copyWith(
-              fontFamily: 'Consolas',
-              fontFamilyFallback: const ['Roboto Mono', 'monospace'],
+              fontFamily: 'IBM Plex Mono',
+              fontFamilyFallback: const ['Consolas', 'Roboto Mono', 'monospace'],
               letterSpacing: 1.2,
               height: 1.6,
               color: theme.colorScheme.onPrimaryContainer,

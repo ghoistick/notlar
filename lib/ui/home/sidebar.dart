@@ -2,6 +2,9 @@ import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/app_settings.dart';
+import '../../backup/backup_service.dart';
+import '../backup/backup_dialog.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/dialogs.dart';
@@ -53,6 +56,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                       style: theme.textTheme.titleLarge
                           ?.copyWith(fontWeight: FontWeight.w600)),
                 ),
+                const _ThemeMenu(),
                 IconButton(
                   tooltip: 'Kilitle (Ctrl+L)',
                   icon: const Icon(Icons.lock_outline, size: 20),
@@ -103,6 +107,27 @@ class _SidebarState extends ConsumerState<Sidebar> {
               label: 'Çöp kutusu',
               selected: view == NoteView.trash,
               onTap: () => _select(NoteView.trash),
+            ),
+            ListenableBuilder(
+              listenable: ref.watch(backupServiceProvider),
+              builder: (context, _) {
+                final backup = ref.read(backupServiceProvider);
+                return _NavRow(
+                  icon: backup.running ? Icons.sync : Icons.backup_outlined,
+                  iconColor: backup.needsAttention
+                      ? Theme.of(context).colorScheme.error
+                      : null,
+                  label: backup.needsAttention
+                      ? 'Yedekleme: ayar gerekli'
+                      : 'Yedekleme',
+                  selected: false,
+                  onTap: () {
+                    final nav = Navigator.of(context);
+                    if (widget.inDrawer) nav.pop();
+                    showBackupDialog(nav.context, ref);
+                  },
+                );
+              },
             ),
           ],
         ),
@@ -260,6 +285,41 @@ class _SidebarState extends ConsumerState<Sidebar> {
             PopupMenuItem(value: i, child: Text(entries[i].$1)),
       ],
       onSelected: (i) => entries[i].$2?.call(),
+    );
+  }
+}
+
+/// Açık / koyu / sistem teması seçimi.
+class _ThemeMenu extends ConsumerWidget {
+  const _ThemeMenu();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(themeModeProvider);
+    const labels = {
+      ThemeMode.system: 'Sistem ayarını izle',
+      ThemeMode.light: 'Açık',
+      ThemeMode.dark: 'Koyu',
+    };
+    return PopupMenuButton<ThemeMode>(
+      tooltip: 'Görünüm',
+      icon: Icon(
+        switch (mode) {
+          ThemeMode.light => Icons.light_mode_outlined,
+          ThemeMode.dark => Icons.dark_mode_outlined,
+          ThemeMode.system => Icons.brightness_auto_outlined,
+        },
+        size: 20,
+      ),
+      onSelected: (m) => ref.read(themeModeProvider.notifier).set(m),
+      itemBuilder: (_) => [
+        for (final e in labels.entries)
+          CheckedPopupMenuItem(
+            value: e.key,
+            checked: mode == e.key,
+            child: Text(e.value),
+          ),
+      ],
     );
   }
 }

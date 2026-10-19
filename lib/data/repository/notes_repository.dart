@@ -783,6 +783,56 @@ class NotesRepository {
     return rows.map((r) => r.noteId).toList();
   }
 
+  // ------------------------------------------- Cihaz ayarları ve yedekleme
+
+  /// Cihaza özel ayar (yedek klasörü, son yedek bilgisi vb.).
+  Future<String?> getMeta(String key) async =>
+      (await (_db.select(_db.localMeta)..where((m) => m.key.equals(key)))
+              .getSingleOrNull())
+          ?.value;
+
+  /// [value] null ise ayar silinir.
+  Future<void> setMeta(String key, String? value) async {
+    if (value == null) {
+      await (_db.delete(_db.localMeta)..where((m) => m.key.equals(key))).go();
+    } else {
+      await _db.into(_db.localMeta).insertOnConflictUpdate(
+          LocalMetaCompanion.insert(key: key, value: value));
+    }
+  }
+
+  /// En son değişikliğin damgası; hiç değişiklik yoksa null.
+  Future<String?> latestChangeHlc() async {
+    final row = await _db
+        .customSelect('SELECT MAX(hlc) AS h FROM change_log')
+        .getSingle();
+    return row.read<String?>('h');
+  }
+
+  /// Çöp kutusundakiler hariç tüm notlar (arşivdekiler dahil).
+  Future<List<Note>> notesForBackup() => (_db.select(_db.notes)
+        ..where((n) => n.deletedAt.isNull())
+        ..orderBy([
+          (n) => OrderingTerm.asc(n.createdAt),
+          (n) => OrderingTerm.asc(n.id),
+        ]))
+      .get();
+
+  /// Not kimliği -> etiket adları (tek sorguda).
+  Future<Map<String, List<String>>> tagNamesByNote() async {
+    final rows = await _db.customSelect(
+      'SELECT nt.note_id, t.name FROM note_tags nt '
+      'JOIN tags t ON t.id = nt.tag_id '
+      'WHERE nt.deleted_at IS NULL AND t.deleted_at IS NULL '
+      'ORDER BY t.name',
+    ).get();
+    final map = <String, List<String>>{};
+    for (final r in rows) {
+      map.putIfAbsent(r.read<String>('note_id'), () => []).add(r.read<String>('name'));
+    }
+    return map;
+  }
+
   // -------------------------------------------------------------- Yardımcılar
 
   /// Her alan değişikliği ayrı bir işlem olarak kaydedilir. Senkronizasyonda

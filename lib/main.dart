@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'app/app_settings.dart';
 import 'app/session.dart';
 import 'app/theme.dart';
 import 'ui/home/home_screen.dart';
@@ -12,17 +13,17 @@ void main() {
   runApp(const ProviderScope(child: NotlarApp()));
 }
 
-class NotlarApp extends StatelessWidget {
+class NotlarApp extends ConsumerWidget {
   const NotlarApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp(
       title: 'Notlar',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      themeMode: ThemeMode.system,
+      themeMode: ref.watch(themeModeProvider),
       locale: const Locale('tr'),
       supportedLocales: const [Locale('tr')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,

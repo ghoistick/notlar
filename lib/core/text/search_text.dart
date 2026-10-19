@@ -21,6 +21,23 @@ String foldForSearch(String input) {
   return out.toString();
 }
 
+/// [foldForSearch] gibi sadeleştirir ama metnin uzunluğunu ve karakter
+/// konumlarını korur. Not içi aramada bulunan konumların orijinal metinle
+/// birebir eşleşmesi için kullanılır.
+String foldSameLength(String input) {
+  final out = StringBuffer();
+  for (final c in input.codeUnits) {
+    final mapped = _fold[c];
+    if (mapped != null) {
+      out.write(mapped);
+      continue;
+    }
+    final lower = String.fromCharCode(c).toLowerCase();
+    out.write(lower.length == 1 ? lower : String.fromCharCode(c));
+  }
+  return out.toString();
+}
+
 const Map<int, String> _fold = {
   0x0130: 'i', // İ
   0x0049: 'i', // I
@@ -53,8 +70,9 @@ String? buildFtsQuery(String userInput) {
   return tokens.map((t) => '"$t"*').join(' ');
 }
 
-final _inlineColor = RegExp(r'\{/?[\p{L}]*\}', unicode: true);
+final _inlineColor = RegExp(r'\{(?:!?\p{L}+|/)\}', unicode: true);
 
-/// Not içi renk işaretlerini kaldırır: "{kırmızı}önemli{/}" -> "önemli".
+/// Not içi renk ve vurgu işaretlerini kaldırır:
+/// "{kırmızı}önemli{/}" -> "önemli", "{!sarı}dikkat{/}" -> "dikkat".
 /// İndeksleme ve başlık çıkarımında kullanılır; not gövdesi değişmez.
 String stripInlineMarkup(String input) => input.replaceAll(_inlineColor, '');

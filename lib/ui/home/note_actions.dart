@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/session.dart';
+import '../../backup/backup_service.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/dialogs.dart';
@@ -16,6 +17,11 @@ final pendingEditorSaves = <Future<void> Function()>{};
 Future<void> lockApp(WidgetRef ref) async {
   for (final flush in [...pendingEditorSaves]) {
     await flush();
+  }
+  try {
+    await ref.read(backupServiceProvider).backupBeforeLock();
+  } catch (_) {
+    // Yedek alınamasa da kilitleme engellenmez; hata yedekleme penceresinde görünür.
   }
   await ref.read(sessionProvider.notifier).lock();
 }

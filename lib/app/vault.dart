@@ -42,6 +42,14 @@ class Vault {
 
   Future<bool> isInitialized() async => (await _keyringFile()).exists();
 
+  /// Açık kasada, veri anahtarından amaca özel alt anahtar türetir
+  /// (ör. yedek parolasını şifrelemek için).
+  Future<Uint8List> subkey(String purpose) {
+    final key = _dataKey;
+    if (key == null) throw StateError('Kasa kilitli.');
+    return deriveSubkey(SecretKey(Uint8List.fromList(key)), purpose);
+  }
+
   /// İlk kurulum. Kurtarma anahtarını döner; kullanıcıya bir kez gösterilir.
   Future<String> create(String password) async {
     if (await isInitialized()) {
