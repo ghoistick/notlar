@@ -52,7 +52,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
               padding: const EdgeInsets.fromLTRB(12, 0, 4, 8),
               child: Row(children: [
                 Expanded(
-                  child: Text('Notlar',
+                  child: Text('Müsvedde',
                       style: theme.textTheme.titleLarge
                           ?.copyWith(fontWeight: FontWeight.w600)),
                 ),

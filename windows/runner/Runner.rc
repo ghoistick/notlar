@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.sahip" "\0"
-            VALUE "FileDescription", "notlar" "\0"
+            VALUE "FileDescription", "Musvedde" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "notlar" "\0"
+            VALUE "InternalName", "musvedde" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.sahip. All rights reserved." "\0"
-            VALUE "OriginalFilename", "notlar.exe" "\0"
-            VALUE "ProductName", "notlar" "\0"
+            VALUE "OriginalFilename", "musvedde.exe" "\0"
+            VALUE "ProductName", "Musvedde" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

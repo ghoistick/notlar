@@ -122,7 +122,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     }
 
     return LockLayout(
-      title: 'Notlar',
+      title: 'Müsvedde',
       message: 'Devam etmek için ana parolanı gir.',
       children: [
         PasswordField(
