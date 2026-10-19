@@ -62,8 +62,11 @@ class SessionNotifier extends Notifier<SessionState> {
     state = SessionUnlocked(_vault.repository);
   }
 
+  /// Önce ekran kilit ekranına geçer, ardından veritabanı kapanır.
+  /// Böylece açık ekranlar kapalı veritabanından okumaya çalışmaz.
   Future<void> lock() async {
-    await _vault.lock();
     state = const SessionLocked();
+    await Future<void>.delayed(Duration.zero);
+    await _vault.lock();
   }
 }

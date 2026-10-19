@@ -147,6 +147,32 @@ class NotesRepository {
   Future<Note?> getNote(String id) =>
       (_db.select(_db.notes)..where((n) => n.id.equals(id))).getSingleOrNull();
 
+  /// Notun güncel halini yayınlar (sabitleme, renk, klasör değişince arayüz
+  /// kendini günceller).
+  Stream<Note?> watchNote(String id) =>
+      (_db.select(_db.notes)..where((n) => n.id.equals(id)))
+          .watchSingleOrNull();
+
+  /// Not listesindeki "içindekiler" özeti için her notun ilk birkaç
+  /// üst düzey başlığı (# ve ##).
+  Stream<Map<String, List<String>>> watchHeadingSummaries({int perNote = 4}) {
+    return _db
+        .customSelect(
+          'SELECT note_id, content FROM note_headings '
+          'WHERE level <= 2 ORDER BY note_id, position',
+          readsFrom: {_db.noteHeadings},
+        )
+        .watch()
+        .map((rows) {
+      final map = <String, List<String>>{};
+      for (final r in rows) {
+        final list = map.putIfAbsent(r.read<String>('note_id'), () => []);
+        if (list.length < perNote) list.add(r.read<String>('content'));
+      }
+      return map;
+    });
+  }
+
   /// Yalnızca gerçekten değişen alanlar yazılır. Hiçbir şey değişmediyse
   /// veritabanına dokunulmaz; otomatik kaydetme sık çağırsa da sorun olmaz.
   ///
@@ -720,7 +746,17 @@ class NotesRepository {
     });
   }
 
-  Future<List<Tag>> tagsOfNote(String noteId) {
+  Stream<List<Tag>> watchTags() => (_db.select(_db.tags)
+        ..where((t) => t.deletedAt.isNull())
+        ..orderBy([(t) => OrderingTerm.asc(t.name)]))
+      .watch();
+
+  Future<List<Tag>> tagsOfNote(String noteId) => _tagsOfNoteQuery(noteId).get();
+
+  Stream<List<Tag>> watchTagsOfNote(String noteId) =>
+      _tagsOfNoteQuery(noteId).watch();
+
+  Selectable<Tag> _tagsOfNoteQuery(String noteId) {
     final q = _db.select(_db.tags).join([
       innerJoin(_db.noteTags, _db.noteTags.tagId.equalsExp(_db.tags.id)),
     ])
@@ -728,7 +764,7 @@ class NotesRepository {
           _db.noteTags.deletedAt.isNull() &
           _db.tags.deletedAt.isNull())
       ..orderBy([OrderingTerm.asc(_db.tags.name)]);
-    return q.map((row) => row.readTable(_db.tags)).get();
+    return q.map((row) => row.readTable(_db.tags));
   }
 
   Future<void> _removeTagLink(

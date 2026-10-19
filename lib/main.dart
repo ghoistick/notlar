@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/session.dart';
 import 'app/theme.dart';
-import 'ui/home/home_placeholder.dart';
+import 'ui/home/home_screen.dart';
 import 'ui/lock/setup_screen.dart';
 import 'ui/lock/unlock_screen.dart';
 
@@ -43,8 +43,7 @@ class SessionGate extends ConsumerWidget {
         const Scaffold(body: Center(child: CircularProgressIndicator())),
       SessionNeedsSetup() => const SetupScreen(),
       SessionLocked() => const UnlockScreen(),
-      SessionUnlocked(:final repository) =>
-        HomePlaceholder(repository: repository),
+      SessionUnlocked() => const HomeScreen(),
     };
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
