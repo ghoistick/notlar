@@ -63,6 +63,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Uygulama içinden yapılan sessiz güncellemeden sonra uygulamayı yeniden aç.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: WizardSilent
 
 ; Notlar, ayarlar ve yedekler (%APPDATA%\Sahip\Musvedde ve Belgeler\Notlar_Yedekleri)
 ; kaldırma sırasında SİLİNMEZ.

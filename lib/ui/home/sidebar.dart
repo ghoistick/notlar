@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_settings.dart';
 import '../../backup/backup_service.dart';
 import '../backup/backup_dialog.dart';
+import '../update/update_dialog.dart';
+import '../../update/update_service.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/dialogs.dart';
@@ -125,6 +127,23 @@ class _SidebarState extends ConsumerState<Sidebar> {
                     final nav = Navigator.of(context);
                     if (widget.inDrawer) nav.pop();
                     showBackupDialog(nav.context, ref);
+                  },
+                );
+              },
+            ),
+            ListenableBuilder(
+              listenable: ref.watch(updateServiceProvider),
+              builder: (context, _) {
+                final update = ref.read(updateServiceProvider).available;
+                return _NavRow(
+                  icon: update != null ? Icons.system_update_alt : Icons.info_outline,
+                  iconColor: update != null ? Theme.of(context).colorScheme.primary : null,
+                  label: update != null ? 'Yeni sürüm: ${update.version}' : 'Hakkında',
+                  selected: false,
+                  onTap: () {
+                    final nav = Navigator.of(context);
+                    if (widget.inDrawer) nav.pop();
+                    showAboutUpdateDialog(nav.context);
                   },
                 );
               },

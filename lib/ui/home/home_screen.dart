@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../backup/backup_service.dart';
+import '../../update/update_service.dart';
 import '../../data/db/tables.dart';
 import 'editor_pane.dart';
 import 'home_state.dart';
@@ -21,6 +22,8 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Kasa açık kaldığı sürece otomatik yedekleme çalışır.
     ref.watch(backupServiceProvider);
+    // Günde en fazla bir kez, sessizce güncelleme denetimi.
+    ref.watch(startupUpdateCheckProvider);
 
     return CallbackShortcuts(
       bindings: {

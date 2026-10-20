@@ -6,6 +6,7 @@
 # 1. pubspec.yaml'dan sürüm numarasını okur
 # 2. Windows sürümünü derler (flutter build windows --release)
 # 3. Inno Setup ile dist\MusveddeKurulum-<sürüm>.exe dosyasını üretir
+# 4. Kurulum dosyasını imzalar ve dist\latest.json dosyasını yazar
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -17,7 +18,7 @@ if ($pubspec -notmatch '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+)') {
 $version = $Matches[1]
 Write-Host "Müsvedde $version derleniyor..." -ForegroundColor Cyan
 
-flutter build windows --release
+flutter build windows --release --dart-define=APP_VERSION=$version
 if ($LASTEXITCODE -ne 0) { throw 'Flutter derlemesi başarısız oldu.' }
 
 # Inno Setup'ı sürüm numarasından bağımsız ara: kullanıcı ve sistem
@@ -40,7 +41,17 @@ Write-Host "Inno Setup: $iscc"
 if ($LASTEXITCODE -ne 0) { throw 'Kurulum paketi oluşturulamadı.' }
 
 $out = "dist\MusveddeKurulum-$version.exe"
-$hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+
 Write-Host ""
-Write-Host "Hazır: $out" -ForegroundColor Green
-Write-Host "SHA-256: $hash"
+$notes = Read-Host 'Sürüm notları (tek satır; boş bırakabilirsin)'
+dart run tools/release_tool.dart sign $out $version --notes "$notes"
+if ($LASTEXITCODE -ne 0) { throw 'İmzalama başarısız oldu.' }
+
+Write-Host ""
+Write-Host "Hazır: $out ve dist\latest.json" -ForegroundColor Green
+Write-Host ""
+Write-Host "Yayımlamak için:" -ForegroundColor Cyan
+Write-Host "  1. https://github.com/ghoistick/musvedde-surumler/releases/new"
+Write-Host "  2. Etiket (tag): v$version"
+Write-Host "  3. Bu iki dosyayı yükle: MusveddeKurulum-$version.exe ve latest.json"
+Write-Host "  4. 'Publish release'"
