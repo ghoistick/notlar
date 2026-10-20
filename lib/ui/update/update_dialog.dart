@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/session.dart';
 import '../../backup/backup_service.dart';
+import '../../core/net/http_client.dart';
 import '../../core/version.dart';
 import '../../update/update_service.dart';
 import '../home/note_actions.dart';
@@ -39,6 +40,52 @@ Future<void> _installUpdate(BuildContext context, WidgetRef ref) async {
   exit(0);
 }
 
+/// Kurum ağında Windows proxy ayarı otomatik bulunamazsa elle girilir.
+Future<void> _editProxy(BuildContext context, UpdateService service) async {
+  final controller = TextEditingController(text: await service.manualProxy() ?? '');
+  if (!context.mounted) return;
+  final value = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Proxy ayarı'),
+      content: SizedBox(
+        width: 400,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            'Uygulama Windows\'un proxy ayarını otomatik bulamıyorsa adresi buraya '
+            'yaz. Boş bırakırsan otomatik algılanır.',
+            style: Theme.of(ctx).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Proxy sunucusu',
+              hintText: 'proxy.kurum.gov.tr:8080',
+            ),
+            onSubmitted: (v) => Navigator.of(ctx).pop(v),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('İptal'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(controller.text),
+          child: const Text('Kaydet ve denetle'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (value == null) return;
+  await service.setManualProxy(value);
+  await service.check();
+}
+
 class _AboutDialog extends StatelessWidget {
   final UpdateService service;
   final VoidCallback onInstall;
@@ -71,7 +118,18 @@ class _AboutDialog extends StatelessWidget {
             LinearProgressIndicator(value: s.progress),
           ]);
         } else if (s.error != null) {
-          status = Text(s.error!, style: TextStyle(color: scheme.error));
+          status = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SelectableText(s.error!, style: TextStyle(color: scheme.error)),
+            const SizedBox(height: 8),
+            FutureBuilder<String>(
+              future: proxySummary(),
+              builder: (context, snap) => SelectableText(
+                snap.data ?? '',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ),
+          ]);
         } else if (available != null) {
           status = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Yeni sürüm: ${available.version}',
@@ -116,6 +174,13 @@ class _AboutDialog extends StatelessWidget {
             ),
           ),
           actions: [
+            if (UpdateService.supported)
+              TextButton(
+                onPressed: s.downloading || s.checking
+                    ? null
+                    : () => _editProxy(context, s),
+                child: const Text('Proxy ayarı…'),
+              ),
             TextButton(
               onPressed: s.downloading ? null : () => Navigator.of(context).pop(),
               child: const Text('Kapat'),

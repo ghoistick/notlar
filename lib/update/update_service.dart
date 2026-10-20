@@ -32,6 +32,7 @@ class UpdateException implements Exception {
 ///     bilgideki değerlerle karşılaştırılır. Uyuşmazsa dosya silinir.
 class UpdateService extends ChangeNotifier {
   static const _kLastCheck = 'lastUpdateCheck';
+  static const _kProxy = 'proxy';
   static const checkEvery = Duration(hours: 24);
 
   final AppSettingsStore _settings;
@@ -74,6 +75,7 @@ class UpdateService extends ChangeNotifier {
     _notify();
 
     try {
+      SystemProxy.setManual(await manualProxy());
       final manifest = await _fetchManifest();
       lastCheckedAt = DateTime.now();
       await _settings.update(_kLastCheck, lastCheckedAt!.toIso8601String());
@@ -88,7 +90,7 @@ class UpdateService extends ChangeNotifier {
       // İmza hatası sessiz geçilmez: biri sahte bir güncelleme sunuyor olabilir.
       error = e.message;
     } catch (e) {
-      if (!silent) error = 'Güncelleme bilgisi alınamadı. İnternet bağlantını kontrol et.';
+      if (!silent) error = 'Güncelleme bilgisi alınamadı: ${describeNetworkError(e)}';
     } finally {
       checking = false;
       _notify();
@@ -96,30 +98,29 @@ class UpdateService extends ChangeNotifier {
   }
 
   Future<UpdateManifest> _fetchManifest() async {
-    final client = await createHttpClient();
-    try {
-      final req = await client.getUrl(Uri.parse(latestManifestUrl));
-      final res = await req.close().timeout(const Duration(seconds: 30));
-      if (res.statusCode != 200) {
-        await res.drain<void>();
-        throw HttpException('HTTP ${res.statusCode}');
-      }
-      final body = await res.transform(utf8.decoder).join();
-      final manifest =
-          UpdateManifest.fromJson(jsonDecode(body) as Map<String, dynamic>);
+    final body = utf8.decode(await httpGetBytes(latestManifestUrl));
+    final manifest =
+        UpdateManifest.fromJson(jsonDecode(body) as Map<String, dynamic>);
 
-      final ok = await manifest.verify(base64Decode(releasePublicKeyBase64));
-      if (!ok || manifest.app != 'musvedde') {
-        throw const UpdateException(
-            'Güncelleme bilgisinin imzası doğrulanamadı; güncelleme yapılmadı.');
-      }
-      if (!manifest.url.startsWith('https://github.com/$releaseRepo/')) {
-        throw const UpdateException('Güncelleme adresi beklenen depoya ait değil.');
-      }
-      return manifest;
-    } finally {
-      client.close(force: true);
+    final ok = await manifest.verify(base64Decode(releasePublicKeyBase64));
+    if (!ok || manifest.app != 'musvedde') {
+      throw const UpdateException(
+          'Güncelleme bilgisinin imzası doğrulanamadı; güncelleme yapılmadı.');
     }
+    if (!manifest.url.startsWith('https://github.com/$releaseRepo/')) {
+      throw const UpdateException('Güncelleme adresi beklenen depoya ait değil.');
+    }
+    return manifest;
+  }
+
+  /// Elle girilen proxy adresi (ayar dosyasında, gizli değildir).
+  Future<String?> manualProxy() async =>
+      (await _settings.load())[_kProxy] as String?;
+
+  Future<void> setManualProxy(String? value) async {
+    final v = value?.trim();
+    await _settings.update(_kProxy, v == null || v.isEmpty ? null : v);
+    SystemProxy.setManual(v);
   }
 
   /// Kurulum dosyasını indirir ve doğrular.
@@ -134,49 +135,41 @@ class UpdateService extends ChangeNotifier {
     final dir = await Directory.systemTemp.createTemp('musvedde_update');
     final target = File(p.join(dir.path, 'MusveddeKurulum-${m.version}.exe'));
     final part = File('${target.path}.part');
-    final client = await createHttpClient();
+    SystemProxy.setManual(await manualProxy());
 
     try {
-      final req = await client.getUrl(Uri.parse(m.url));
-      final res = await req.close();
-      if (res.statusCode != 200) throw HttpException('HTTP ${res.statusCode}');
+      await httpDownload(m.url, part, onProgress: (received) {
+        progress = (received / m.size).clamp(0.0, 1.0);
+        _notify();
+      });
 
-      final sink = part.openWrite();
-      final hasher = Sha256().newHashSink();
-      var received = 0;
-      try {
-        await for (final chunk in res) {
-          received += chunk.length;
-          if (received > m.size) {
-            throw const UpdateException('İndirilen dosya beklenenden büyük.');
-          }
-          sink.add(chunk);
-          hasher.add(chunk);
-          progress = received / m.size;
-          _notify();
-        }
-      } finally {
-        await sink.close();
+      final size = await part.length();
+      if (size != m.size) {
+        throw const UpdateException(
+            'İndirilen dosyanın boyutu beklenenden farklı; silindi.');
       }
+      final hasher = Sha256().newHashSink();
+      await part.openRead().forEach(hasher.add);
       hasher.close();
       final hash = (await hasher.hash())
           .bytes
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
-
-      if (received != m.size || hash != m.sha256) {
+      if (hash != m.sha256) {
         throw const UpdateException(
             'İndirilen dosya doğrulanamadı (özet uyuşmuyor); silindi.');
       }
+
       await part.rename(target.path);
       downloaded = target;
       return target;
     } catch (e) {
       if (await part.exists()) await part.delete();
-      error = e is UpdateException ? e.message : 'Güncelleme indirilemedi.';
+      error = e is UpdateException
+          ? e.message
+          : 'Güncelleme indirilemedi: ${describeNetworkError(e)}';
       return null;
     } finally {
-      client.close(force: true);
       downloading = false;
       _notify();
     }

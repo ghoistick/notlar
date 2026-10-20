@@ -75,8 +75,8 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     ProxyOverride    REG_SZ    <local>;*.kurum.gov.tr;10.*
 ''';
       final p = SystemProxy.fromRegistryOutput(out);
-      expect(p.resolve(Uri.parse('https://github.com/x')), 'PROXY p2.kurum:8080; DIRECT');
-      expect(p.resolve(Uri.parse('http://ornek.com')), 'PROXY p1.kurum:80; DIRECT');
+      expect(p.resolve(Uri.parse('https://github.com/x')), 'PROXY p2.kurum:8080');
+      expect(p.resolve(Uri.parse('http://ornek.com')), 'PROXY p1.kurum:80');
       expect(p.resolve(Uri.parse('https://intranet/')), 'DIRECT');
       expect(p.resolve(Uri.parse('https://atlas.kurum.gov.tr')), 'DIRECT');
       expect(p.resolve(Uri.parse('http://10.1.2.3')), 'DIRECT');
@@ -89,10 +89,19 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
           'DIRECT');
     });
 
+    test('elle girilen proxy otomatik algılamanın önüne geçer', () async {
+      SystemProxy.setManual('http://proxy.kurum:8080/');
+      final p = await SystemProxy.load();
+      expect(p.resolve(Uri.parse('https://github.com')), 'PROXY proxy.kurum:8080');
+      expect(p.resolve(Uri.parse('https://intranet')), 'DIRECT');
+      SystemProxy.setManual(null);
+      expect(SystemProxy.manual, isNull);
+    });
+
     test('ortam değişkeni biçimi', () {
       expect(SystemProxy.stripScheme('http://proxy.kurum:3128/'), 'proxy.kurum:3128');
       const p = SystemProxy(server: 'proxy.kurum:3128');
-      expect(p.resolve(Uri.parse('https://github.com')), 'PROXY proxy.kurum:3128; DIRECT');
+      expect(p.resolve(Uri.parse('https://github.com')), 'PROXY proxy.kurum:3128');
     });
   });
 }
