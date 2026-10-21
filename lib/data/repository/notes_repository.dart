@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:drift/drift.dart';
 
@@ -10,9 +11,11 @@ import '../../core/text/turkish_collation.dart';
 import '../db/database.dart';
 import 'import_records.dart';
 import 'note_query.dart';
+import 'sync_records.dart';
 
 export 'import_records.dart';
 export 'note_query.dart';
+export 'sync_records.dart';
 
 class NotFoundException implements Exception {
   final String what;
@@ -108,42 +111,59 @@ class NotesRepository {
     String body = '',
     String? color,
   }) {
-    return _db.transaction(() async {
-      final now = _now();
-      final hlc = _clock.tick().pack();
-      final id = uuidV7(millis: now);
+    return _db.transaction(() => _insertNote(
+          folderId: folderId,
+          kind: kind,
+          type: type,
+          title: title,
+          body: body,
+          color: color,
+        ));
+  }
 
-      await _db.into(_db.notes).insert(NotesCompanion.insert(
-            id: id,
-            folderId: Value(folderId),
-            kind: Value(kind),
-            type: Value(type),
-            title: Value(title),
-            body: Value(body),
-            color: Value(color),
-            sizeBytes: Value(_size(title, body)),
-            createdAt: now,
-            updatedAt: now,
-            hlc: hlc,
-          ));
+  /// İşlem (transaction) açmadan not ekler; açık bir işlemin içinden çağrılır.
+  Future<String> _insertNote({
+    String? folderId,
+    NoteKind kind = NoteKind.note,
+    NoteType type = NoteType.text,
+    String title = '',
+    String body = '',
+    String? color,
+  }) async {
+    final now = _now();
+    final hlc = _clock.tick().pack();
+    final id = uuidV7(millis: now);
 
-      await _log('note', id, {
-        'folder_id': folderId,
-        'kind': kind.name,
-        'type': type.name,
-        'title': title,
-        'body': body,
-        'color': color,
-        'pinned': false,
-        'archived': false,
-        'locked': false,
-        'created_at': now,
-      }, hlc);
+    await _db.into(_db.notes).insert(NotesCompanion.insert(
+          id: id,
+          folderId: Value(folderId),
+          kind: Value(kind),
+          type: Value(type),
+          title: Value(title),
+          body: Value(body),
+          color: Value(color),
+          sizeBytes: Value(_size(title, body)),
+          createdAt: now,
+          updatedAt: now,
+          hlc: hlc,
+        ));
 
-      await _rebuildHeadings(id, body);
-      await _reindex(id);
-      return id;
-    });
+    await _log('note', id, {
+      'folder_id': folderId,
+      'kind': kind.name,
+      'type': type.name,
+      'title': title,
+      'body': body,
+      'color': color,
+      'pinned': false,
+      'archived': false,
+      'locked': false,
+      'created_at': now,
+    }, hlc);
+
+    await _rebuildHeadings(id, body);
+    await _reindex(id);
+    return id;
   }
 
   Future<Note?> getNote(String id) =>
@@ -783,6 +803,224 @@ class NotesRepository {
           ..where((nt) => nt.tagId.equals(tagId) & nt.deletedAt.isNull()))
         .get();
     return rows.map((r) => r.noteId).toList();
+  }
+
+  // --------------------------------------------------- Senkronizasyon
+
+  /// Bu cihazda yapılmış, henüz gönderilmemiş değişiklikler (HLC sırasıyla).
+  Future<List<ChangeLogData>> pendingOps({int limit = 2000}) =>
+      (_db.select(_db.changeLog)
+            ..where((c) => c.synced.equals(false) & c.deviceId.equals(deviceId))
+            ..orderBy([
+              (c) => OrderingTerm.asc(c.hlc),
+              (c) => OrderingTerm.asc(c.opId),
+            ])
+            ..limit(limit))
+          .get();
+
+  Future<void> markSynced(List<String> opIds) async {
+    for (var i = 0; i < opIds.length; i += 500) {
+      final chunk = opIds.sublist(i, min(i + 500, opIds.length));
+      await (_db.update(_db.changeLog)..where((c) => c.opId.isIn(chunk)))
+          .write(const ChangeLogCompanion(synced: Value(true)));
+    }
+  }
+
+  /// Başka bir cihazın değişikliklerini uygular.
+  ///
+  /// Her alan için en yeni HLC kazanır (alan bazında "son yazan kazanır").
+  /// Not gövdesi iki cihazda birbirinden habersiz değiştirildiyse, kaybeden
+  /// metin silinmez; "(çakışan kopya)" adıyla ayrı bir not olarak saklanır.
+  /// Habersizlik, yerel değişikliğin henüz gönderilmemiş olmasından anlaşılır:
+  /// eşitleme her zaman önce alıp sonra gönderdiği için, karşı cihaz o
+  /// değişikliği henüz görmüş olamaz.
+  Future<ApplyResult> applyRemoteOps(String fromDevice, List<RemoteOp> ops) {
+    return _db.transaction(() async {
+      final r = ApplyResult();
+      final touchedNotes = <String>{};
+      final bodyNotes = <String>{};
+      final touchedTags = <String>{};
+
+      final sorted = [...ops]..sort((a, b) => a.hlc.compareTo(b.hlc));
+      for (final op in sorted) {
+        final dup = await (_db.select(_db.changeLog)
+              ..where((c) => c.opId.equals(op.opId)))
+            .getSingleOrNull();
+        if (dup != null) {
+          r.duplicates++;
+          continue;
+        }
+
+        final latest = await _db.customSelect(
+          'SELECT hlc, synced, value FROM change_log '
+          'WHERE entity = ? AND entity_id = ? AND field = ? '
+          'ORDER BY hlc DESC LIMIT 1',
+          variables: [
+            Variable.withString(op.entity),
+            Variable.withString(op.entityId),
+            Variable.withString(op.field),
+          ],
+        ).getSingleOrNull();
+
+        await _db.into(_db.changeLog).insert(ChangeLogCompanion.insert(
+              opId: op.opId,
+              entity: op.entity,
+              entityId: op.entityId,
+              field: op.field,
+              value: Value(op.value),
+              hlc: op.hlc,
+              deviceId: fromDevice,
+              synced: const Value(true),
+            ));
+        _clock.receive(Hlc.parse(op.hlc));
+
+        final localHlc = latest?.read<String>('hlc');
+        final localUnsynced = latest != null && !latest.read<bool>('synced');
+        final localValue = latest?.read<String?>('value');
+        final bodyConflict = op.entity == 'note' &&
+            op.field == 'body' &&
+            localUnsynced &&
+            localValue != op.value;
+
+        if (localHlc != null && localHlc.compareTo(op.hlc) > 0) {
+          // Yerel değişiklik daha yeni: uzaktaki kaybeder.
+          if (bodyConflict) {
+            await _conflictCopy(op.entityId, op.value);
+            r.conflicts++;
+          }
+          r.ignored++;
+          continue;
+        }
+        if (bodyConflict) {
+          // Uzaktaki kazanır; gönderilmemiş yerel metin kopya olarak kalır.
+          await _conflictCopy(op.entityId, localValue);
+          r.conflicts++;
+        }
+        await _applyRemoteField(op, touchedNotes, bodyNotes, touchedTags);
+        r.applied++;
+      }
+
+      for (final tagId in touchedTags) {
+        touchedNotes.addAll(await _notesWithTag(tagId));
+      }
+      for (final id in touchedNotes) {
+        final n = await getNote(id);
+        if (n == null) continue;
+        await (_db.update(_db.notes)..where((x) => x.id.equals(id)))
+            .write(NotesCompanion(sizeBytes: Value(_size(n.title, n.body))));
+        if (bodyNotes.contains(id)) await _rebuildHeadings(id, n.body);
+        await _reindex(id);
+      }
+      return r;
+    });
+  }
+
+  Future<void> _conflictCopy(String noteId, String? bodyJson) async {
+    final n = await getNote(noteId);
+    final body = bodyJson == null ? '' : jsonDecode(bodyJson) as String? ?? '';
+    final title = n == null || n.title.trim().isEmpty
+        ? 'Çakışan kopya'
+        : '${n.title} (çakışan kopya)';
+    await _insertNote(
+      folderId: n?.folderId,
+      kind: n?.kind ?? NoteKind.note,
+      type: n?.type ?? NoteType.text,
+      title: title,
+      body: body,
+      color: n?.color,
+    );
+  }
+
+  Future<void> _applyRemoteField(
+    RemoteOp op,
+    Set<String> touchedNotes,
+    Set<String> bodyNotes,
+    Set<String> touchedTags,
+  ) async {
+    final v = op.value == null ? null : jsonDecode(op.value!);
+    final millis = Hlc.parse(op.hlc).millis;
+    final id = op.entityId;
+
+    switch (op.entity) {
+      case 'note':
+        await _db.customStatement(
+          'INSERT OR IGNORE INTO notes (id, created_at, updated_at, hlc) '
+          'VALUES (?, ?, ?, ?)',
+          [id, millis, millis, op.hlc],
+        );
+        final NotesCompanion? c = switch (op.field) {
+          'title' => NotesCompanion(title: Value(v as String)),
+          'body' => NotesCompanion(body: Value(v as String)),
+          'folder_id' => NotesCompanion(folderId: Value(v as String?)),
+          'color' => NotesCompanion(color: Value(v as String?)),
+          'kind' => NotesCompanion(kind: Value(NoteKind.values.byName(v as String))),
+          'type' => NotesCompanion(type: Value(NoteType.values.byName(v as String))),
+          'pinned' => NotesCompanion(pinned: Value(v as bool)),
+          'archived' => NotesCompanion(archived: Value(v as bool)),
+          'locked' => NotesCompanion(locked: Value(v as bool)),
+          'created_at' => NotesCompanion(createdAt: Value(v as int)),
+          'deleted_at' => NotesCompanion(deletedAt: Value(v as int?)),
+          _ => null,
+        };
+        if (c == null) return;
+        await (_db.update(_db.notes)..where((n) => n.id.equals(id))).write(c);
+        if (const {'title', 'body', 'type'}.contains(op.field)) {
+          await _db.customStatement(
+              'UPDATE notes SET updated_at = MAX(updated_at, ?) WHERE id = ?',
+              [millis, id]);
+        }
+        touchedNotes.add(id);
+        if (op.field == 'body') bodyNotes.add(id);
+
+      case 'folder':
+        await _db.customStatement(
+          'INSERT OR IGNORE INTO folders (id, name, created_at, updated_at, hlc) '
+          "VALUES (?, '', ?, ?, ?)",
+          [id, millis, millis, op.hlc],
+        );
+        final FoldersCompanion? c = switch (op.field) {
+          'parent_id' => FoldersCompanion(parentId: Value(v as String?)),
+          'name' => FoldersCompanion(name: Value(v as String)),
+          'color' => FoldersCompanion(color: Value(v as String?)),
+          'position' => FoldersCompanion(position: Value(v as int)),
+          'created_at' => FoldersCompanion(createdAt: Value(v as int)),
+          'deleted_at' => FoldersCompanion(deletedAt: Value(v as int?)),
+          _ => null,
+        };
+        if (c == null) return;
+        await (_db.update(_db.folders)..where((f) => f.id.equals(id))).write(c);
+
+      case 'tag':
+        await _db.customStatement(
+          'INSERT OR IGNORE INTO tags (id, name, created_at, updated_at, hlc) '
+          "VALUES (?, '', ?, ?, ?)",
+          [id, millis, millis, op.hlc],
+        );
+        final TagsCompanion? c = switch (op.field) {
+          'name' => TagsCompanion(name: Value(v as String)),
+          'color' => TagsCompanion(color: Value(v as String?)),
+          'parent_id' => TagsCompanion(parentId: Value(v as String?)),
+          'created_at' => TagsCompanion(createdAt: Value(v as int)),
+          'deleted_at' => TagsCompanion(deletedAt: Value(v as int?)),
+          _ => null,
+        };
+        if (c == null) return;
+        await (_db.update(_db.tags)..where((t) => t.id.equals(id))).write(c);
+        if (op.field == 'name' || op.field == 'deleted_at') touchedTags.add(id);
+
+      case 'note_tag':
+        final parts = id.split('|');
+        if (parts.length != 2 || op.field != 'deleted_at') return;
+        await _db.customStatement(
+          'INSERT OR IGNORE INTO note_tags (note_id, tag_id, created_at, updated_at, hlc) '
+          'VALUES (?, ?, ?, ?, ?)',
+          [parts[0], parts[1], millis, millis, op.hlc],
+        );
+        await (_db.update(_db.noteTags)
+              ..where((nt) => nt.noteId.equals(parts[0]) & nt.tagId.equals(parts[1])))
+            .write(NoteTagsCompanion(deletedAt: Value(v as int?)));
+        touchedNotes.add(parts[0]);
+    }
   }
 
   // ----------------------------------------------------- İçe aktarma

@@ -10,6 +10,11 @@ import 'package:notlar/data/db/database.dart';
 import 'package:notlar/data/repository/notes_repository.dart';
 
 void main() {
+  // Bu testler iki ayrı cihazı taklit etmek için bilerek iki bağımsız
+  // veritabanı açar; drift'in "aynı veritabanı iki kez açıldı" uyarısı
+  // burada geçerli değil.
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+
   late AppDatabase dbA;
   late AppDatabase dbB;
   late NotesRepository a;

@@ -42,6 +42,11 @@ class Vault {
 
   Future<bool> isInitialized() async => (await _keyringFile()).exists();
 
+  /// keyring.json içeriği. Yalnızca sarmalanmış anahtarlar içerir; ana parola
+  /// ya da kurtarma anahtarı olmadan işe yaramaz. Yeni cihazın senkronizasyona
+  /// katılabilmesi için Drive'a yüklenir.
+  Future<Uint8List> keyringBytes() async => (await _keyringFile()).readAsBytes();
+
   /// Açık kasada, veri anahtarından amaca özel alt anahtar türetir
   /// (ör. yedek parolasını şifrelemek için).
   Future<Uint8List> subkey(String purpose) {

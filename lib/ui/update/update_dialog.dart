@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/session.dart';
 import '../../backup/backup_service.dart';
 import '../../core/net/http_client.dart';
+import '../../sync/sync_service.dart';
 import '../../core/version.dart';
 import '../../update/update_service.dart';
 import '../home/note_actions.dart';
@@ -31,6 +32,9 @@ Future<void> _installUpdate(BuildContext context, WidgetRef ref) async {
   for (final flush in [...pendingEditorSaves]) {
     await flush();
   }
+  try {
+    await ref.read(syncServiceProvider).syncBeforeLock();
+  } catch (_) {}
   try {
     await ref.read(backupServiceProvider).backupBeforeLock();
   } catch (_) {}

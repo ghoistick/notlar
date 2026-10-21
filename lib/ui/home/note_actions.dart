@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/session.dart';
 import '../../backup/backup_service.dart';
+import '../../sync/sync_service.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/dialogs.dart';
@@ -17,6 +18,11 @@ final pendingEditorSaves = <Future<void> Function()>{};
 Future<void> lockApp(WidgetRef ref) async {
   for (final flush in [...pendingEditorSaves]) {
     await flush();
+  }
+  try {
+    await ref.read(syncServiceProvider).syncBeforeLock();
+  } catch (_) {
+    // Eşitlenemese de kilitleme engellenmez; değişiklikler bir sonrakinde gider.
   }
   try {
     await ref.read(backupServiceProvider).backupBeforeLock();

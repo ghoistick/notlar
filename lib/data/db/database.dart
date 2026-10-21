@@ -23,7 +23,12 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  /// Senkronizasyonda "bu alanın en son değişikliği hangisi" sorusu için.
+  static const createChangeLogFieldIndexSql =
+      'CREATE INDEX IF NOT EXISTS idx_change_log_field '
+      'ON change_log(entity, entity_id, field, hlc)';
 
   /// Tam metin arama indeksi.
   ///
@@ -46,6 +51,10 @@ class AppDatabase extends _$AppDatabase {
         onCreate: (m) async {
           await m.createAll();
           await customStatement(createFtsSql);
+          await customStatement(createChangeLogFieldIndexSql);
+        },
+        onUpgrade: (m, from, to) async {
+          if (from < 2) await customStatement(createChangeLogFieldIndexSql);
         },
       );
 }

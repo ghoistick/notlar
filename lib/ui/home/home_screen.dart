@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../backup/backup_service.dart';
+import '../../sync/google_account.dart';
+import '../../sync/sync_service.dart';
 import '../../update/update_service.dart';
 import '../../data/db/tables.dart';
 import 'editor_pane.dart';
@@ -22,6 +24,10 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Kasa açık kaldığı sürece otomatik yedekleme çalışır.
     ref.watch(backupServiceProvider);
+    // Google oturumu kasa açık kaldığı sürece hazır tutulur.
+    ref.watch(googleAccountProvider);
+    // Eşitleme, kasa açık kaldığı sürece arka planda çalışır.
+    ref.watch(syncServiceProvider);
     // Günde en fazla bir kez, sessizce güncelleme denetimi.
     ref.watch(startupUpdateCheckProvider);
 

@@ -43,6 +43,9 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   file_selector: ^1.1.0
+  googleapis: ^17.0.0
+  googleapis_auth: ^2.3.4
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

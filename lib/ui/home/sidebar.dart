@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_settings.dart';
 import '../../backup/backup_service.dart';
 import '../backup/backup_dialog.dart';
+import '../sync/sync_dialog.dart';
+import '../../sync/google_account.dart';
+import '../../sync/sync_service.dart';
 import '../update/update_dialog.dart';
 import '../../update/update_service.dart';
 import '../../data/db/database.dart';
@@ -109,6 +112,30 @@ class _SidebarState extends ConsumerState<Sidebar> {
               label: 'Çöp kutusu',
               selected: view == NoteView.trash,
               onTap: () => _select(NoteView.trash),
+            ),
+            ListenableBuilder(
+              listenable: Listenable.merge(
+                  [ref.watch(googleAccountProvider), ref.watch(syncServiceProvider)]),
+              builder: (context, _) {
+                final google = ref.read(googleAccountProvider);
+                final sync = ref.read(syncServiceProvider);
+                final hasError = google.error != null || sync.lastError != null;
+                return _NavRow(
+                  icon: sync.running
+                      ? Icons.sync
+                      : google.connected
+                          ? Icons.cloud_done_outlined
+                          : Icons.cloud_outlined,
+                  iconColor: hasError ? Theme.of(context).colorScheme.error : null,
+                  label: hasError ? 'Senkronizasyon: sorun var' : 'Senkronizasyon',
+                  selected: false,
+                  onTap: () {
+                    final nav = Navigator.of(context);
+                    if (widget.inDrawer) nav.pop();
+                    showSyncDialog(nav.context);
+                  },
+                );
+              },
             ),
             ListenableBuilder(
               listenable: ref.watch(backupServiceProvider),

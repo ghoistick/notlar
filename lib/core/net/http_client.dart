@@ -167,8 +167,8 @@ Future<List<String>> _curlProxyArgs(Uri uri) async {
   return r.startsWith('PROXY ') ? ['-x', 'http://${r.substring(6)}'] : ['--noproxy', '*'];
 }
 
-List<String> _curlCommon(Duration maxTime) => [
-      '--fail', // 400 ve üzeri yanıtlar hata sayılır
+List<String> _curlCommon(Duration maxTime, {bool fail = true}) => [
+      if (fail) '--fail', // 400 ve üzeri yanıtlar hata sayılır
       '--silent',
       '--show-error',
       '--location', // GitHub indirmeleri yönlendirme kullanır
@@ -269,6 +269,116 @@ Future<void> httpDownload(
     } finally {
       await sink.close();
     }
+  } finally {
+    client.close(force: true);
+  }
+}
+
+// ------------------------------------------------------- Genel istekler
+
+class HttpResult {
+  final int status;
+  final Map<String, String> headers; // anahtarlar küçük harf
+  final Uint8List body;
+  const HttpResult(this.status, this.headers, this.body);
+}
+
+/// Herhangi bir HTTP isteği. Windows'ta curl, diğer sistemlerde Dart'ın
+/// istemcisi kullanılır. 4xx/5xx yanıtlar hata fırlatmaz; [HttpResult.status]
+/// ile kontrol edilir.
+///
+/// Başlıklar curl'e geçici bir dosyadan verilir; erişim anahtarı gibi
+/// değerler komut satırında (işlem listesinde) görünmez.
+Future<HttpResult> httpSend(
+  String method,
+  Uri url, {
+  Map<String, String> headers = const {},
+  List<int>? body,
+  Duration timeout = const Duration(minutes: 5),
+}) async {
+  final curl = _curlPath;
+  if (curl == null) return _dartSend(method, url, headers, body, timeout);
+
+  final dir = await Directory.systemTemp.createTemp('musvedde_http');
+  try {
+    final sep = Platform.pathSeparator;
+    final headerIn = File('${dir.path}${sep}istek.txt');
+    final headerOut = File('${dir.path}${sep}yanit.txt');
+    final lines = StringBuffer()..writeln('Expect:'); // 100-continue beklemesin
+    headers.forEach((k, v) {
+      final key = k.toLowerCase();
+      if (key == 'content-length' || key == 'host') return;
+      lines.writeln('$k: $v');
+    });
+    await headerIn.writeAsString(lines.toString(), flush: true);
+
+    final p = await Process.start(curl, [
+      ..._curlCommon(timeout, fail: false),
+      ...await _curlProxyArgs(url),
+      '--request', method,
+      '--header', '@${headerIn.path}',
+      '--dump-header', headerOut.path,
+      if (body != null) ...['--data-binary', '@-'],
+      url.toString(),
+    ]);
+    final err = p.stderr.transform(const SystemEncoding().decoder).join();
+    final out = BytesBuilder(copy: false);
+    final outDone = p.stdout.forEach(out.add);
+    if (body != null) p.stdin.add(body);
+    await p.stdin.close();
+    await outDone;
+
+    final code = await p.exitCode;
+    if (code != 0) throw CurlException(code, (await err).trim());
+    final (status, respHeaders) = parseCurlHeaders(await headerOut.readAsString());
+    return HttpResult(status, respHeaders, out.toBytes());
+  } finally {
+    await dir.delete(recursive: true).catchError((_) => dir);
+  }
+}
+
+/// curl --dump-header çıktısını çözümler. Proxy tüneli ("200 Connection
+/// established") ve yönlendirmeler ayrı bloklar olarak gelir; son blok asıl
+/// yanıttır.
+(int, Map<String, String>) parseCurlHeaders(String raw) {
+  final blocks = raw
+      .replaceAll('\r\n', '\n')
+      .split(RegExp(r'\n\s*\n'))
+      .where((b) => b.trimLeft().startsWith('HTTP/'))
+      .toList();
+  if (blocks.isEmpty) throw const FormatException('Yanıt başlığı yok');
+
+  final lines = blocks.last.trim().split('\n');
+  final status = int.parse(lines.first.split(' ')[1]);
+  final headers = <String, String>{};
+  for (final l in lines.skip(1)) {
+    final i = l.indexOf(':');
+    if (i <= 0) continue;
+    final k = l.substring(0, i).trim().toLowerCase();
+    final v = l.substring(i + 1).trim();
+    headers[k] = headers.containsKey(k) ? '${headers[k]}, $v' : v;
+  }
+  return (status, headers);
+}
+
+Future<HttpResult> _dartSend(
+  String method,
+  Uri url,
+  Map<String, String> headers,
+  List<int>? body,
+  Duration timeout,
+) async {
+  final client = await createHttpClient();
+  try {
+    final req = await client.openUrl(method, url);
+    headers.forEach(req.headers.set);
+    if (body != null) req.add(body);
+    final res = await req.close().timeout(timeout);
+    final out = BytesBuilder(copy: false);
+    await res.forEach(out.add);
+    final h = <String, String>{};
+    res.headers.forEach((k, v) => h[k.toLowerCase()] = v.join(', '));
+    return HttpResult(res.statusCode, h, out.toBytes());
   } finally {
     client.close(force: true);
   }

@@ -18,7 +18,12 @@ if ($pubspec -notmatch '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+)') {
 $version = $Matches[1]
 Write-Host "Müsvedde $version derleniyor..." -ForegroundColor Cyan
 
-flutter build windows --release --dart-define=APP_VERSION=$version
+$googleConfig = Join-Path $env:USERPROFILE '.musvedde\google.json'
+if (-not (Test-Path $googleConfig)) {
+    throw "Google istemci bilgileri bulunamadı: $googleConfig"
+}
+
+flutter build windows --release --dart-define=APP_VERSION=$version --dart-define-from-file="$googleConfig"
 if ($LASTEXITCODE -ne 0) { throw 'Flutter derlemesi başarısız oldu.' }
 
 # Inno Setup'ı sürüm numarasından bağımsız ara: kullanıcı ve sistem
