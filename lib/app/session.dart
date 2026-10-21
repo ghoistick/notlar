@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:googleapis_auth/googleapis_auth.dart';
 
 import '../data/repository/notes_repository.dart';
+import '../sync/google_account.dart';
 import 'vault.dart';
 
 final vaultProvider = Provider<Vault>((ref) => Vault());
@@ -51,6 +55,19 @@ class SessionNotifier extends Notifier<SessionState> {
   Future<String> createVault(String password) => _vault.create(password);
 
   void finishSetup() => state = SessionUnlocked(_vault.repository);
+
+  /// Başka bir cihazdaki kasaya katılır. Google oturumu da saklanır; ana
+  /// ekran açılınca ilk eşitleme bütün notları getirir.
+  Future<void> joinVault(
+    Uint8List keyring,
+    String password,
+    AccessCredentials googleCredentials,
+  ) async {
+    await _vault.join(keyring, password);
+    await saveGoogleCredentials(
+        _vault.repository, _vault.subkey, googleCredentials);
+    state = SessionUnlocked(_vault.repository);
+  }
 
   Future<void> unlock(String password) async {
     await _vault.unlock(password);

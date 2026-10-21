@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../app/paths.dart';
 import '../app/session.dart';
 import '../core/crypto/blob_cipher.dart';
 import '../core/crypto/subkeys.dart';
@@ -81,6 +82,8 @@ class BackupService extends ChangeNotifier {
   bool get canRun => hasPassword && sevenZipPath != null && !running;
 
   static Future<String> defaultDirectory() async {
+    final override = dataDirOverride;
+    if (override != null) return p.join(override, 'Yedekler');
     final docs = await getApplicationDocumentsDirectory();
     return p.join(docs.path, 'Notlar_Yedekleri');
   }

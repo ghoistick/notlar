@@ -16,6 +16,7 @@ import '../core/net/http_client.dart';
 import '../data/repository/notes_repository.dart';
 import '../ui/home/home_state.dart';
 import 'google_config.dart';
+import 'sync_store.dart';
 import 'transport_client.dart';
 
 /// Google hesabı bağlantısı.
@@ -26,7 +27,6 @@ import 'transport_client.dart';
 class GoogleAccount extends ChangeNotifier {
   static const _kCredentials = 'google_credentials';
   static const _kEmail = 'google_email';
-  static final _aad = utf8.encode('musvedde/google-credentials/v1');
 
   final NotesRepository _repo;
   final Future<Uint8List> Function(String purpose) _subkey;
@@ -94,13 +94,10 @@ class GoogleAccount extends ChangeNotifier {
     _notify();
 
     try {
-      final client = await clientViaUserConsent(
-        _clientId,
-        googleScopes,
-        _openBrowser,
-        baseClient: _base,
-        customPostAuthPage: _successPage,
-      ).timeout(const Duration(minutes: 5));
+      final client = await googleConsent((url) {
+        pendingAuthUrl = url;
+        _notify();
+      });
 
       await _saveCredentials(client.credentials);
       _attach(client);
@@ -113,16 +110,6 @@ class GoogleAccount extends ChangeNotifier {
       pendingAuthUrl = null;
       busy = false;
       _notify();
-    }
-  }
-
-  void _openBrowser(String url) {
-    pendingAuthUrl = url;
-    _notify();
-    if (Platform.isWindows) {
-      Process.start('rundll32', ['url.dll,FileProtocolHandler', url]);
-    } else if (Platform.isLinux) {
-      Process.start('xdg-open', [url]);
     }
   }
 
@@ -216,18 +203,14 @@ class GoogleAccount extends ChangeNotifier {
 
   // ------------------------------------------------------------ Saklama
 
-  Future<void> _saveCredentials(AccessCredentials c) async {
-    final key = SecretKey(await _subkey(KeyPurpose.sync));
-    final blob = await BlobCipher()
-        .encrypt(key, utf8.encode(jsonEncode(c.toJson())), aad: _aad);
-    await _repo.setMeta(_kCredentials, base64Encode(blob));
-  }
+  Future<void> _saveCredentials(AccessCredentials c) =>
+      saveGoogleCredentials(_repo, _subkey, c);
 
   Future<AccessCredentials?> _loadCredentials() async {
     final stored = await _repo.getMeta(_kCredentials);
     if (stored == null) return null;
     final key = SecretKey(await _subkey(KeyPurpose.sync));
-    final clear = await BlobCipher().decrypt(key, base64Decode(stored), aad: _aad);
+    final clear = await BlobCipher().decrypt(key, base64Decode(stored), aad: _credentialsAad);
     return AccessCredentials.fromJson(
         jsonDecode(utf8.decode(clear)) as Map<String, dynamic>);
   }
@@ -245,6 +228,54 @@ class GoogleAccount extends ChangeNotifier {
     _client?.close();
     super.dispose();
   }
+}
+
+// ------------------------------------------------ Kasa açılmadan önce de
+
+final _credentialsAad = utf8.encode('musvedde/google-credentials/v1');
+
+/// Tarayıcıda Google girişini başlatır. [onUrl], tarayıcı açılmazsa
+/// kullanıcıya gösterilecek giriş adresiyle çağrılır.
+Future<AutoRefreshingAuthClient> googleConsent(void Function(String url) onUrl) {
+  return clientViaUserConsent(
+    ClientId(googleClientId, googleClientSecret),
+    googleScopes,
+    (url) {
+      onUrl(url);
+      openInBrowser(url);
+    },
+    baseClient: TransportClient(),
+    customPostAuthPage: _successPage,
+  ).timeout(const Duration(minutes: 5));
+}
+
+void openInBrowser(String url) {
+  if (Platform.isWindows) {
+    Process.start('rundll32', ['url.dll,FileProtocolHandler', url]);
+  } else if (Platform.isLinux) {
+    Process.start('xdg-open', [url]);
+  }
+}
+
+/// Google oturum bilgisini veri anahtarından türetilen anahtarla şifreleyip saklar.
+Future<void> saveGoogleCredentials(
+  NotesRepository repo,
+  Future<Uint8List> Function(String purpose) subkey,
+  AccessCredentials c,
+) async {
+  final key = SecretKey(await subkey(KeyPurpose.sync));
+  final blob = await BlobCipher()
+      .encrypt(key, utf8.encode(jsonEncode(c.toJson())), aad: _credentialsAad);
+  await repo.setMeta(GoogleAccount._kCredentials, base64Encode(blob));
+}
+
+/// Drive'daki anahtar dosyası; senkronizasyon hiç kurulmamışsa null.
+Future<Uint8List?> fetchRemoteKeyring(AuthClient client) async {
+  final store = DriveSyncStore(drive.DriveApi(client));
+  final file = (await store.list('keyring.json'))
+      .where((f) => f.name == 'keyring.json')
+      .firstOrNull;
+  return file == null ? null : store.read(file.id);
 }
 
 /// Google ve ağ hatalarını anlaşılır bir dile çevirir.

@@ -58,6 +58,56 @@ void main() {
     await v.lock();
   });
 
+  group('başka cihazdaki kasaya katılma', () {
+    late Directory dir2;
+    setUp(() => dir2 = Directory.systemTemp.createTempSync('vault_test2'));
+    tearDown(() => dir2.deleteSync(recursive: true));
+
+    Vault secondDevice() =>
+        Vault(baseDir: dir2, kdfSettings: KdfSettings.fastForTests);
+
+    test('aynı anahtar dosyası ve parolayla aynı veri anahtarına ulaşılır',
+        () async {
+      final first = newVault();
+      await first.create('ortak-parola');
+      final keyring = await first.keyringBytes();
+      final idFirst = await first.subkey('vault-id');
+
+      final second = secondDevice();
+      await second.join(keyring, 'ortak-parola');
+      expect(await second.subkey('vault-id'), idFirst);
+      expect(await second.isInitialized(), isTrue);
+
+      // Katıldıktan sonra kendi başına da aynı parolayla açılır.
+      await second.lock();
+      await second.unlock('ortak-parola');
+      expect(second.isUnlocked, isTrue);
+      await second.lock();
+      await first.lock();
+    });
+
+    test('yanlış parolada diske hiçbir şey yazılmaz', () async {
+      final first = newVault();
+      await first.create('ortak-parola');
+      final keyring = await first.keyringBytes();
+      await first.lock();
+
+      final second = secondDevice();
+      await expectLater(
+          second.join(keyring, 'yanlis-parola'), throwsA(isA<WrongPasswordException>()));
+      expect(await second.isInitialized(), isFalse);
+    });
+
+    test('kasası olan cihaz katılamaz', () async {
+      final first = newVault();
+      await first.create('ortak-parola');
+      final keyring = await first.keyringBytes();
+      await first.lock();
+
+      await expectLater(first.join(keyring, 'ortak-parola'), throwsStateError);
+    });
+  });
+
   test('geçersiz kurtarma anahtarı reddedilir', () async {
     final v = newVault();
     await v.create('parola-123');

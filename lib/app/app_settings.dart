@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import 'paths.dart';
 
 /// Kilit açılmadan önce de gereken, gizli olmayan cihaz ayarları.
 ///
@@ -13,8 +13,7 @@ import 'package:path_provider/path_provider.dart';
 /// konmaz.
 class AppSettingsStore {
   Future<File> _file() async {
-    final dir = await getApplicationSupportDirectory();
-    await dir.create(recursive: true);
+    final dir = await appDataDirectory();
     return File(p.join(dir.path, 'settings.json'));
   }
 

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/session.dart';
+import 'join_screen.dart';
 import 'lock_widgets.dart';
 
 /// İlk açılış: ana parola belirlenir, ardından kurtarma anahtarı gösterilir.
@@ -19,6 +20,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
   String? _error;
   bool _busy = false;
   String? _recoveryKey;
+  _Mode _mode = _Mode.choose;
 
   @override
   void dispose() {
@@ -51,6 +53,30 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     }
   }
 
+  Widget _choice(BuildContext context) {
+    return LockLayout(
+      title: 'Müsvedde\'ye hoş geldin',
+      message: 'Bu cihazda Müsvedde\'yi nasıl kullanmak istersin?',
+      children: [
+        _ChoiceCard(
+          icon: Icons.note_add_outlined,
+          title: 'Yeni kasa oluştur',
+          text: 'Müsvedde\'yi ilk kez kullanıyorsan. Notların için yeni bir '
+              'ana parola belirlersin.',
+          onTap: () => setState(() => _mode = _Mode.create),
+        ),
+        const SizedBox(height: 12),
+        _ChoiceCard(
+          icon: Icons.cloud_download_outlined,
+          title: 'Mevcut senkronizasyona katıl',
+          text: 'Başka bir cihazda zaten kullanıyorsan. Google hesabına bağlanır, '
+              'o cihazdaki ana parolanla notlarını buraya getirirsin.',
+          onTap: () => setState(() => _mode = _Mode.join),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final key = _recoveryKey;
@@ -59,6 +85,11 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
         recoveryKey: key,
         onContinue: () => ref.read(sessionProvider.notifier).finishSetup(),
       );
+    }
+
+    if (_mode == _Mode.choose) return _choice(context);
+    if (_mode == _Mode.join) {
+      return JoinScreen(onBack: () => setState(() => _mode = _Mode.choose));
     }
 
     return LockLayout(
@@ -82,7 +113,64 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
         ),
         const SizedBox(height: 20),
         BusyButton(label: 'Parolayı belirle', busy: _busy, onPressed: _submit),
+        const SizedBox(height: 8),
+        TextButton(
+          onPressed: _busy ? null : () => setState(() => _mode = _Mode.choose),
+          child: const Text('Geri dön'),
+        ),
       ],
+    );
+  }
+}
+
+enum _Mode { choose, create, join }
+
+class _ChoiceCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String text;
+  final VoidCallback onTap;
+
+  const _ChoiceCard({
+    required this.icon,
+    required this.title,
+    required this.text,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Material(
+      color: scheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(icon, color: scheme.primary),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(title,
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text(text,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant, height: 1.4)),
+              ]),
+            ),
+            Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+          ]),
+        ),
+      ),
     );
   }
 }

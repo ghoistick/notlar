@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../core/crypto/key_manager.dart';
 import '../core/crypto/keyring.dart';
@@ -12,6 +11,7 @@ import '../core/crypto/subkeys.dart';
 import '../data/db/connection.dart';
 import '../data/db/database.dart';
 import '../data/repository/notes_repository.dart';
+import 'paths.dart';
 
 /// Kasa: anahtarları ve şifreli veritabanını yönetir.
 ///
@@ -72,6 +72,27 @@ class Vault {
     await _writeKeyring(result.keyring);
     await _open(result.dataKey);
     return result.recoveryKey;
+  }
+
+  /// Başka bir cihazda kurulmuş kasaya katılır: Drive'dan indirilen anahtar
+  /// dosyası, o kasanın ana parolasıyla açılır. Parola yanlışsa
+  /// [WrongPasswordException] fırlatır; bu durumda diske hiçbir şey yazılmaz.
+  Future<void> join(Uint8List keyringBytes, String password) async {
+    if (await isInitialized()) {
+      throw StateError('Bu cihazda zaten bir kasa var.');
+    }
+    try {
+      Keyring.decode(keyringBytes);
+    } catch (_) {
+      throw const FormatException('Drive\'daki anahtar dosyası okunamadı.');
+    }
+    final dataKey = await Isolate.run(() async {
+      final key = await KeyManager()
+          .unlockWithPassword(Keyring.decode(keyringBytes), password);
+      return Uint8List.fromList(await key.extractBytes());
+    });
+    await _writeKeyring(keyringBytes);
+    await _open(dataKey);
   }
 
   /// Parola yanlışsa [WrongPasswordException] fırlatır.
@@ -155,9 +176,10 @@ class Vault {
   }
 
   Future<Directory> _directory() async {
-    final dir = _baseDir ?? await getApplicationSupportDirectory();
-    await dir.create(recursive: true);
-    return dir;
+    final base = _baseDir;
+    if (base == null) return appDataDirectory();
+    await base.create(recursive: true);
+    return base;
   }
 
   Future<File> _keyringFile() async =>
