@@ -58,14 +58,25 @@ class SessionNotifier extends Notifier<SessionState> {
 
   /// Başka bir cihazdaki kasaya katılır. Google oturumu da saklanır; ana
   /// ekran açılınca ilk eşitleme bütün notları getirir.
+  ///
+  /// Masaüstünde Google oturum bilgisi [googleCredentials] şifreli saklanır;
+  /// telefonda oturumu Google Play Hizmetleri tuttuğu için yalnızca bağlı
+  /// hesabın e-postası ([mobileEmail]) kaydedilir.
   Future<void> joinVault(
     Uint8List keyring,
-    String password,
-    AccessCredentials googleCredentials,
-  ) async {
+    String password, {
+    AccessCredentials? googleCredentials,
+    bool mobileConnected = false,
+    String? mobileEmail,
+  }) async {
     await _vault.join(keyring, password);
-    await saveGoogleCredentials(
-        _vault.repository, _vault.subkey, googleCredentials);
+    if (googleCredentials != null) {
+      await saveGoogleCredentials(
+          _vault.repository, _vault.subkey, googleCredentials);
+    }
+    if (mobileConnected) {
+      await markMobileGoogleConnected(_vault.repository, mobileEmail);
+    }
     state = SessionUnlocked(_vault.repository);
   }
 

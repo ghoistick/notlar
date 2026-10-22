@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/session.dart';
 import '../../core/crypto/key_manager.dart';
+import '../../update/update_service.dart';
+import '../update/update_dialog.dart';
 import 'lock_widgets.dart';
 
 /// Kilit ekranı. "Parolamı unuttum" ile kurtarma anahtarı moduna geçer.
@@ -138,6 +140,21 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
         TextButton(
           onPressed: _busy ? null : _toggleMode,
           child: const Text('Parolamı unuttum'),
+        ),
+        ListenableBuilder(
+          listenable: ref.watch(updateServiceProvider),
+          builder: (context, _) {
+            final update = ref.read(updateServiceProvider).available;
+            if (update == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: OutlinedButton.icon(
+                onPressed: () => showAboutUpdateDialog(context),
+                icon: const Icon(Icons.system_update_alt, size: 18),
+                label: Text('Yeni sürüm hazır: ${update.version}'),
+              ),
+            );
+          },
         ),
       ],
     );

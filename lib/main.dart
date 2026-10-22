@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/app_settings.dart';
 import 'app/session.dart';
 import 'app/theme.dart';
+import 'update/update_service.dart';
 import 'ui/home/home_screen.dart';
 import 'ui/lock/setup_screen.dart';
 import 'ui/lock/unlock_screen.dart';
@@ -39,6 +40,9 @@ class SessionGate extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionProvider);
+    // Güncelleme denetimi kilit açılmasını beklemez: bir sürüm kilit açmayı
+    // bozsa bile düzeltmeyi içeren güncellemeye ulaşılabilir.
+    ref.watch(startupUpdateCheckProvider);
     final Widget screen = switch (session) {
       SessionLoading() =>
         const Scaffold(body: Center(child: CircularProgressIndicator())),

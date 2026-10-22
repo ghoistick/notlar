@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -137,6 +139,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 );
               },
             ),
+            if (Platform.isWindows || Platform.isLinux)
             ListenableBuilder(
               listenable: ref.watch(backupServiceProvider),
               builder: (context, _) {

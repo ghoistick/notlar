@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:googleapis_auth/googleapis_auth.dart';
+import 'package:http/http.dart' as http;
 
 import '../app/session.dart';
 import '../app/vault.dart';
@@ -42,7 +42,7 @@ class SyncService extends ChangeNotifier {
 
   Timer? _timer;
   SyncEngine? _engine;
-  AuthClient? _engineClient;
+  http.Client? _engineClient;
   bool _disposed = false;
 
   bool get available => _account.connected;
@@ -72,7 +72,7 @@ class SyncService extends ChangeNotifier {
     if (value) unawaited(syncNow());
   }
 
-  SyncEngine _engineFor(AuthClient client) {
+  SyncEngine _engineFor(http.Client client) {
     if (_engine == null || !identical(_engineClient, client)) {
       _engine = SyncEngine(
         repo: _repo,

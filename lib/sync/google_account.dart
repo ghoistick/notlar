@@ -7,7 +7,10 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis_auth/auth_io.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app/session.dart';
 import '../core/crypto/blob_cipher.dart';
@@ -16,6 +19,7 @@ import '../core/net/http_client.dart';
 import '../data/repository/notes_repository.dart';
 import '../ui/home/home_state.dart';
 import 'google_config.dart';
+import 'google_mobile_auth.dart';
 import 'sync_store.dart';
 import 'transport_client.dart';
 
@@ -27,6 +31,7 @@ import 'transport_client.dart';
 class GoogleAccount extends ChangeNotifier {
   static const _kCredentials = 'google_credentials';
   static const _kEmail = 'google_email';
+  static const _kMobile = 'google_mobile';
 
   final NotesRepository _repo;
   final Future<Uint8List> Function(String purpose) _subkey;
@@ -47,23 +52,33 @@ class GoogleAccount extends ChangeNotifier {
   /// Giriş sürerken: tarayıcı açılmazsa kullanıcı bu adresi kopyalayabilir.
   String? pendingAuthUrl;
 
-  AutoRefreshingAuthClient? _client;
+  /// Drive istekleri için istemci: masaüstünde [_desktop], telefonda
+  /// Google Play Hizmetleri'nden anahtar alan [MobileAuthClient].
+  http.Client? _client;
+  AutoRefreshingAuthClient? _desktop;
   StreamSubscription<AccessCredentials>? _updates;
   bool _disposed = false;
 
   bool get connected => _client != null;
 
   /// Senkronizasyon motoru bu istemciyle Drive'a erişir.
-  AutoRefreshingAuthClient? get client => _client;
+  http.Client? get client => _client;
 
   ClientId get _clientId => ClientId(googleClientId, googleClientSecret);
 
   Future<void> start() async {
     try {
       email = await _repo.getMeta(_kEmail);
-      final creds = await _loadCredentials();
-      if (creds != null) {
-        _attach(autoRefreshingClient(_clientId, creds, _base));
+      if (isMobilePlatform) {
+        if (await _repo.getMeta(_kMobile) == 'true' &&
+            await GoogleMobileAuth.isAuthorized()) {
+          _client = MobileAuthClient();
+        }
+      } else {
+        final creds = await _loadCredentials();
+        if (creds != null) {
+          _attach(autoRefreshingClient(_clientId, creds, _base));
+        }
       }
     } catch (e) {
       error = 'Kayıtlı Google oturumu açılamadı: $e';
@@ -75,6 +90,7 @@ class GoogleAccount extends ChangeNotifier {
   void _attach(AutoRefreshingAuthClient client) {
     _updates?.cancel();
     _client?.close();
+    _desktop = client;
     _client = client;
     // Erişim anahtarı yenilendikçe yeni hali saklanır.
     _updates = client.credentialUpdates.listen(_saveCredentials);
@@ -94,14 +110,21 @@ class GoogleAccount extends ChangeNotifier {
     _notify();
 
     try {
-      final client = await googleConsent((url) {
-        pendingAuthUrl = url;
-        _notify();
-      });
-
-      await _saveCredentials(client.credentials);
-      _attach(client);
-      await _loadEmail();
+      if (isMobilePlatform) {
+        await GoogleMobileAuth.authorize();
+        _client?.close();
+        _client = MobileAuthClient();
+        await _repo.setMeta(_kMobile, 'true');
+        await _loadEmail();
+      } else {
+        final client = await googleConsent((url) {
+          pendingAuthUrl = url;
+          _notify();
+        });
+        await _saveCredentials(client.credentials);
+        _attach(client);
+        await _loadEmail();
+      }
     } on TimeoutException {
       error = 'Giriş 5 dakika içinde tamamlanmadı. Tekrar dene.';
     } catch (e) {
@@ -118,8 +141,9 @@ class GoogleAccount extends ChangeNotifier {
     busy = true;
     _notify();
     try {
-      final token = _client?.credentials.refreshToken ??
-          _client?.credentials.accessToken.data;
+      if (isMobilePlatform) await GoogleMobileAuth.disconnect();
+      final token = _desktop?.credentials.refreshToken ??
+          _desktop?.credentials.accessToken.data;
       if (token != null) {
         await httpSend(
           'POST',
@@ -134,8 +158,10 @@ class GoogleAccount extends ChangeNotifier {
     await _updates?.cancel();
     _client?.close();
     _client = null;
+    _desktop = null;
     email = null;
     testResult = null;
+    await _repo.setMeta(_kMobile, null);
     await _repo.setMeta(_kCredentials, null);
     await _repo.setMeta(_kEmail, null);
     busy = false;
@@ -254,6 +280,10 @@ void openInBrowser(String url) {
     Process.start('rundll32', ['url.dll,FileProtocolHandler', url]);
   } else if (Platform.isLinux) {
     Process.start('xdg-open', [url]);
+  } else {
+    // Android: varsayılan tarayıcıda (uygulama içinde değil) açılır; Google
+    // giriş sayfaları gömülü tarayıcıları kabul etmez.
+    launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 }
 
@@ -269,8 +299,25 @@ Future<void> saveGoogleCredentials(
   await repo.setMeta(GoogleAccount._kCredentials, base64Encode(blob));
 }
 
+/// Telefonda Google oturumunu Play Hizmetleri tutar; yalnızca bağlı olduğu
+/// ve e-posta adresi kaydedilir.
+Future<void> markMobileGoogleConnected(NotesRepository repo, String? email) async {
+  await repo.setMeta(GoogleAccount._kMobile, 'true');
+  await repo.setMeta(GoogleAccount._kEmail, email);
+}
+
+/// Bağlı Google hesabının e-posta adresi (yalnızca gösterim için).
+Future<String?> fetchGoogleEmail(http.Client client) async {
+  try {
+    final about = await drive.DriveApi(client).about.get($fields: 'user(emailAddress)');
+    return about.user?.emailAddress;
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Drive'daki anahtar dosyası; senkronizasyon hiç kurulmamışsa null.
-Future<Uint8List?> fetchRemoteKeyring(AuthClient client) async {
+Future<Uint8List?> fetchRemoteKeyring(http.Client client) async {
   final store = DriveSyncStore(drive.DriveApi(client));
   final file = (await store.list('keyring.json'))
       .where((f) => f.name == 'keyring.json')
@@ -280,6 +327,15 @@ Future<Uint8List?> fetchRemoteKeyring(AuthClient client) async {
 
 /// Google ve ağ hatalarını anlaşılır bir dile çevirir.
 String describeGoogleError(Object e) {
+  if (e is GoogleSignInException) {
+    // Android, yapılandırma hatalarında da (paket adı, SHA-1, web istemci
+    // kimliği) "canceled" dönebiliyor; asıl sebep açıklamada yazar.
+    final detail = e.description == null ? '' : ' Ayrıntı: ${e.description}';
+    if (e.code == GoogleSignInExceptionCode.canceled) {
+      return 'Google girişi iptal edildi.$detail';
+    }
+    return 'Google girişi tamamlanamadı (${e.code.name}).$detail';
+  }
   if (e is drive.DetailedApiRequestError) {
     return 'Google yanıtı ${e.status}: ${e.message ?? ''}';
   }

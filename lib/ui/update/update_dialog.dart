@@ -29,16 +29,20 @@ Future<void> _installUpdate(BuildContext context, WidgetRef ref) async {
   final file = updates.downloaded ?? await updates.download();
   if (file == null || !context.mounted) return;
 
-  for (final flush in [...pendingEditorSaves]) {
-    await flush();
+  // Kasa açıksa: kayıtları yaz, eşitle, yedek al ve kilitle. Kilitliyken
+  // (ör. kilit ekranından güncelleme) bunlara gerek yok.
+  if (ref.read(sessionProvider) is SessionUnlocked) {
+    for (final flush in [...pendingEditorSaves]) {
+      await flush();
+    }
+    try {
+      await ref.read(syncServiceProvider).syncBeforeLock();
+    } catch (_) {}
+    try {
+      await ref.read(backupServiceProvider).backupBeforeLock();
+    } catch (_) {}
+    await ref.read(sessionProvider.notifier).lock();
   }
-  try {
-    await ref.read(syncServiceProvider).syncBeforeLock();
-  } catch (_) {}
-  try {
-    await ref.read(backupServiceProvider).backupBeforeLock();
-  } catch (_) {}
-  await ref.read(sessionProvider.notifier).lock();
 
   await updates.launchInstaller(file);
   exit(0);

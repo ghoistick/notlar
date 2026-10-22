@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.2+3
+version: 1.0.3+4
 
 environment:
   sdk: ^3.13.5
@@ -46,6 +46,8 @@ dependencies:
   googleapis: ^17.0.0
   googleapis_auth: ^2.3.4
   http: ^1.6.0
+  url_launcher: ^6.3.3
+  google_sign_in: ^7.2.0
 
 dev_dependencies:
   flutter_test:
@@ -120,3 +122,9 @@ hooks:
     sqlite3:
       source: sqlite3mc
       url_pattern: "http://localhost:8000/$RELEASE_TAG/$FILENAME"
+      
+# Geçici: path_provider_android 2.3+ "jni" paketini getiriyor ve bu paket
+# şu anki Flutter Gradle eklentisiyle Android'de derlenemiyor. Sorun
+# giderilince bu bölüm silinecek.
+dependency_overrides:
+  path_provider_android: ">=2.2.0 <2.3.0"

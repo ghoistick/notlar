@@ -5,11 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:googleapis_auth/googleapis_auth.dart';
+import 'package:http/http.dart' as http;
 
 import '../../app/session.dart';
 import '../../core/crypto/key_manager.dart';
 import '../../sync/google_account.dart';
 import '../../sync/google_config.dart';
+import '../../sync/google_mobile_auth.dart';
 import 'lock_widgets.dart';
 
 /// Başka bir cihazda kullanılan Müsvedde'ye katılma:
@@ -29,7 +31,12 @@ class _JoinScreenState extends ConsumerState<JoinScreen> {
   String? _error;
   String? _authUrl;
 
-  AutoRefreshingAuthClient? _client;
+  /// Drive'a erişen istemci (masaüstünde tarayıcı girişi, telefonda Google
+  /// Play Hizmetleri).
+  http.Client? _client;
+  AccessCredentials? _desktopCredentials;
+  String? _mobileEmail;
+  bool _mobileConnected = false;
   Uint8List? _keyring;
   bool _joined = false;
 
@@ -50,9 +57,19 @@ class _JoinScreenState extends ConsumerState<JoinScreen> {
       _error = null;
     });
     try {
-      final client = await googleConsent((url) {
-        if (mounted) setState(() => _authUrl = url);
-      });
+      final http.Client client;
+      if (isMobilePlatform) {
+        await GoogleMobileAuth.authorize();
+        client = MobileAuthClient();
+        _mobileEmail = await fetchGoogleEmail(client);
+        _mobileConnected = true;
+      } else {
+        final desktop = await googleConsent((url) {
+          if (mounted) setState(() => _authUrl = url);
+        });
+        client = desktop;
+        _desktopCredentials = desktop.credentials;
+      }
       final keyring = await fetchRemoteKeyring(client);
       if (keyring == null) {
         client.close();
@@ -86,7 +103,13 @@ class _JoinScreenState extends ConsumerState<JoinScreen> {
     try {
       await ref
           .read(sessionProvider.notifier)
-          .joinVault(_keyring!, _password.text, _client!.credentials);
+          .joinVault(
+            _keyring!,
+            _password.text,
+            googleCredentials: _desktopCredentials,
+            mobileConnected: _mobileConnected,
+            mobileEmail: _mobileEmail,
+          );
       _joined = true;
       _client!.close();
     } on WrongPasswordException {
