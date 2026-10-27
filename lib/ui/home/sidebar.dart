@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_settings.dart';
 import '../../backup/backup_service.dart';
 import '../backup/backup_dialog.dart';
+import '../import/import_dialog.dart';
+import '../lock/security_dialog.dart';
 import '../sync/sync_dialog.dart';
 import '../../sync/google_account.dart';
 import '../../sync/sync_service.dart';
@@ -114,6 +116,26 @@ class _SidebarState extends ConsumerState<Sidebar> {
               label: 'Çöp kutusu',
               selected: view == NoteView.trash,
               onTap: () => _select(NoteView.trash),
+            ),
+            _NavRow(
+              icon: Icons.move_to_inbox_outlined,
+              label: 'İçe aktar',
+              selected: false,
+              onTap: () {
+                final nav = Navigator.of(context);
+                if (widget.inDrawer) nav.pop();
+                showImportDialog(nav.context);
+              },
+            ),
+            _NavRow(
+              icon: Icons.shield_outlined,
+              label: 'Kilit ve güvenlik',
+              selected: false,
+              onTap: () {
+                final nav = Navigator.of(context);
+                if (widget.inDrawer) nav.pop();
+                showSecurityDialog(nav.context);
+              },
             ),
             ListenableBuilder(
               listenable: Listenable.merge(

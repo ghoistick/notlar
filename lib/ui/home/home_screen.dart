@@ -7,6 +7,7 @@ import '../../sync/google_account.dart';
 import '../../sync/sync_service.dart';
 import '../../update/update_service.dart';
 import '../../data/db/tables.dart';
+import 'auto_lock.dart';
 import 'editor_pane.dart';
 import 'home_state.dart';
 import 'note_actions.dart';
@@ -31,7 +32,8 @@ class HomeScreen extends ConsumerWidget {
     // Günde en fazla bir kez, sessizce güncelleme denetimi.
     ref.watch(startupUpdateCheckProvider);
 
-    return CallbackShortcuts(
+    return AutoLockScope(
+      child: CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>
             createNoteInView(context, ref),
@@ -50,6 +52,7 @@ class HomeScreen extends ConsumerWidget {
           if (c.maxWidth >= 700) return const _MediumLayout();
           return const _NarrowLayout();
         }),
+      ),
       ),
     );
   }

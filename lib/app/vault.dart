@@ -128,6 +128,17 @@ class Vault {
     await _open(result.dataKey);
   }
 
+  /// Hızlı kilit açmadan gelen veri anahtarıyla açar.
+  Future<void> unlockWithDataKey(Uint8List dataKey) =>
+      _open(Uint8List.fromList(dataKey));
+
+  /// Açık kasanın veri anahtarının kopyası (hızlı kilit açmayı kurmak için).
+  Uint8List dataKeyCopy() {
+    final key = _dataKey;
+    if (key == null) throw StateError('Kasa kilitli.');
+    return Uint8List.fromList(key);
+  }
+
   /// Veritabanını kapatır ve anahtarı bellekten siler.
   Future<void> lock() async {
     final db = _db;

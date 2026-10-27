@@ -64,3 +64,29 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
     ref.read(settingsStoreProvider).update('theme', mode.name);
   }
 }
+
+
+/// Uygulama arka plana geçtikten kaç dakika sonra kilitlensin.
+/// 0: hemen, -1: hiçbir zaman. Varsayılan 5 dakika.
+final autoLockProvider =
+    NotifierProvider<AutoLockNotifier, int>(AutoLockNotifier.new);
+
+class AutoLockNotifier extends Notifier<int> {
+  static const options = [0, 1, 5, 15, 60, -1];
+
+  @override
+  int build() {
+    _load();
+    return 5;
+  }
+
+  Future<void> _load() async {
+    final v = (await ref.read(settingsStoreProvider).load())['autoLockMinutes'];
+    if (v is int && options.contains(v)) state = v;
+  }
+
+  void set(int minutes) {
+    state = minutes;
+    ref.read(settingsStoreProvider).update('autoLockMinutes', minutes);
+  }
+}

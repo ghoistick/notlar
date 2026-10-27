@@ -5,9 +5,12 @@ import 'package:googleapis_auth/googleapis_auth.dart';
 
 import '../data/repository/notes_repository.dart';
 import '../sync/google_account.dart';
+import 'quick_unlock.dart';
 import 'vault.dart';
 
 final vaultProvider = Provider<Vault>((ref) => Vault());
+
+final quickUnlockProvider = Provider<QuickUnlock>((ref) => QuickUnlock());
 
 /// Uygulamanın hangi ekranda olacağını belirleyen oturum durumu.
 sealed class SessionState {
@@ -82,6 +85,24 @@ class SessionNotifier extends Notifier<SessionState> {
 
   Future<void> unlock(String password) async {
     await _vault.unlock(password);
+    try {
+      await ref.read(quickUnlockProvider).notePasswordUsed();
+    } catch (_) {}
+    state = SessionUnlocked(_vault.repository);
+  }
+
+  /// Yanlış PIN'de [WrongPinException], kurulum yoksa ya da bozuksa
+  /// [QuickUnlockUnavailable] fırlatır.
+  Future<void> unlockWithPin(String pin) async {
+    final key = await ref.read(quickUnlockProvider).unlockWithPin(pin);
+    await _vault.unlockWithDataKey(key);
+    state = SessionUnlocked(_vault.repository);
+  }
+
+  /// İşletim sisteminin parmak izi doğrulaması önceden yapılmış olmalı.
+  Future<void> unlockWithBiometric() async {
+    final key = await ref.read(quickUnlockProvider).unlockWithBiometric();
+    await _vault.unlockWithDataKey(key);
     state = SessionUnlocked(_vault.repository);
   }
 
