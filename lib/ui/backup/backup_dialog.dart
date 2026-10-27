@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../backup/backup_service.dart';
+import '../../sync/google_account.dart';
 import '../common/format.dart';
 import '../lock/lock_widgets.dart';
+import '../sync/sync_dialog.dart';
 import 'restore_flow.dart';
 
 /// Pencere kendi `ref`ini kullanır; çağıran widget kapanmış olsa da
@@ -17,7 +19,10 @@ Future<void> showBackupDialog(BuildContext context, [WidgetRef? _]) {
     builder: (_) => Consumer(
       builder: (ctx, ref, __) => _BackupDialog(
         service: ref.watch(backupServiceProvider),
+        google: ref.watch(googleAccountProvider),
         onRestore: () => restoreFromBackup(ctx, ref),
+        onRestoreDrive: () => restoreFromDrive(ctx, ref),
+        onOpenSync: () => showSyncDialog(ctx),
       ),
     ),
   );
@@ -25,8 +30,17 @@ Future<void> showBackupDialog(BuildContext context, [WidgetRef? _]) {
 
 class _BackupDialog extends StatelessWidget {
   final BackupService service;
+  final GoogleAccount google;
   final VoidCallback onRestore;
-  const _BackupDialog({required this.service, required this.onRestore});
+  final VoidCallback onRestoreDrive;
+  final VoidCallback onOpenSync;
+  const _BackupDialog({
+    required this.service,
+    required this.google,
+    required this.onRestore,
+    required this.onRestoreDrive,
+    required this.onOpenSync,
+  });
 
   Future<void> _changeDirectory(BuildContext context) async {
     final dir = await getDirectoryPath(
@@ -70,9 +84,11 @@ class _BackupDialog extends StatelessWidget {
     final muted = theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
 
     return ListenableBuilder(
-      listenable: service,
+      listenable: Listenable.merge([service, google]),
       builder: (context, _) {
         final s = service;
+        final phone = s.toDrive;
+        final engineReady = phone || s.sevenZipPath != null;
         return AlertDialog(
           title: const Text('Yedekleme'),
           content: SizedBox(
@@ -83,15 +99,22 @@ class _BackupDialog extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Notların şifreli bir 7-Zip arşivi olarak aşağıdaki klasöre '
-                    'kaydedilir. Arşivi uygulama olmadan da 7-Zip ve yedek '
-                    'parolanla açabilirsin; içinde notların Markdown dosyaları '
-                    'olarak, klasör yapınla birlikte durur.',
+                    phone
+                        ? 'Notların AES-256 ile şifreli bir ZIP arşivi olarak '
+                            'Google Drive\'ın uygulamaya özel klasörüne kaydedilir. '
+                            'Bu klasör Drive\'da görünmez; yedekleri buradan ya da '
+                            'bilgisayardaki Müsvedde\'den geri yükleyebilirsin. '
+                            'İçinde notların Markdown dosyaları olarak, klasör '
+                            'yapınla birlikte durur.'
+                        : 'Notların şifreli bir 7-Zip arşivi olarak aşağıdaki klasöre '
+                            'kaydedilir. Arşivi uygulama olmadan da 7-Zip ve yedek '
+                            'parolanla açabilirsin; içinde notların Markdown dosyaları '
+                            'olarak, klasör yapınla birlikte durur.',
                     style: theme.textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 16),
                   _StatusBox(service: s),
-                  if (s.loaded && s.sevenZipPath == null) ...[
+                  if (s.loaded && !phone && s.sevenZipPath == null) ...[
                     const SizedBox(height: 12),
                     _Warning(
                       text: '7-Zip bulunamadı. Yedek almak ve yedekleri açmak '
@@ -103,23 +126,47 @@ class _BackupDialog extends StatelessWidget {
                     ),
                   ],
                   const SizedBox(height: 20),
-                  Text('Yedek klasörü',
-                      style: theme.textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  SelectableText(s.directory ?? '…', style: theme.textTheme.bodyMedium),
-                  const SizedBox(height: 8),
-                  Wrap(spacing: 8, children: [
-                    OutlinedButton(
-                      onPressed: () => _changeDirectory(context),
-                      child: const Text('Klasörü değiştir'),
-                    ),
-                    OutlinedButton(
-                      onPressed: _openDirectory,
-                      child: const Text('Klasörü aç'),
-                    ),
-                  ]),
-                  const SizedBox(height: 20),
+                  if (phone) ...[
+                    Text('Google Drive',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    if (s.driveConnected)
+                      Text(
+                        google.email == null
+                            ? 'Bağlı.'
+                            : 'Bağlı hesap: ${google.email}',
+                        style: theme.textTheme.bodyMedium,
+                      )
+                    else
+                      _Warning(
+                        text: 'Google Drive bağlı değil. Telefonda yedekler '
+                            'Drive\'a alınır; önce senkronizasyondan bağlan.',
+                        action: TextButton(
+                          onPressed: onOpenSync,
+                          child: const Text('Bağlan'),
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+                  ] else ...[
+                    Text('Yedek klasörü',
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    SelectableText(s.directory ?? '…', style: theme.textTheme.bodyMedium),
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 8, children: [
+                      OutlinedButton(
+                        onPressed: () => _changeDirectory(context),
+                        child: const Text('Klasörü değiştir'),
+                      ),
+                      OutlinedButton(
+                        onPressed: _openDirectory,
+                        child: const Text('Klasörü aç'),
+                      ),
+                    ]),
+                    const SizedBox(height: 20),
+                  ],
                   Text('Yedek parolası',
                       style: theme.textTheme.titleSmall
                           ?.copyWith(fontWeight: FontWeight.w600)),
@@ -129,8 +176,12 @@ class _BackupDialog extends StatelessWidget {
                         ? 'Belirlendi. Değiştirirsen yeni parola yalnızca bundan '
                             'sonraki yedeklerde geçerli olur; eski yedekler eski '
                             'parolayla açılır.'
-                        : 'Yedek almak için bir parola belirle. Arşivleri 7-Zip ile '
-                            'açarken bu parolayı gireceksin.',
+                        : phone
+                            ? 'Yedek almak için bir parola belirle. Bilgisayardaki '
+                                'Müsvedde\'de kullandığın yedek parolasını girersen '
+                                'iki cihazın yedekleri aynı parolayla açılır.'
+                            : 'Yedek almak için bir parola belirle. Arşivleri 7-Zip ile '
+                                'açarken bu parolayı gireceksin.',
                     style: muted,
                   ),
                   const SizedBox(height: 8),
@@ -162,11 +213,21 @@ class _BackupDialog extends StatelessWidget {
                     style: muted,
                   ),
                   const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: s.sevenZipPath == null || s.running ? null : onRestore,
-                    icon: const Icon(Icons.restore, size: 18),
-                    label: const Text('Yedekten geri yükle…'),
-                  ),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    if (phone)
+                      OutlinedButton.icon(
+                        onPressed: !s.driveConnected || s.running
+                            ? null
+                            : onRestoreDrive,
+                        icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                        label: const Text('Drive\'daki yedekten…'),
+                      ),
+                    OutlinedButton.icon(
+                      onPressed: !engineReady || s.running ? null : onRestore,
+                      icon: const Icon(Icons.restore, size: 18),
+                      label: Text(phone ? 'Dosyadan…' : 'Yedekten geri yükle…'),
+                    ),
+                  ]),
                 ],
               ),
             ),

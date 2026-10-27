@@ -16,6 +16,10 @@ abstract class SyncStore {
   Future<Uint8List> read(String fileId);
   Future<String> create(String name, Uint8List data);
   Future<void> update(String fileId, Uint8List data);
+
+  /// Yedek saklama kuralı için (eski yedekleri silmek). Senkronizasyon
+  /// motoru bunu KULLANMAZ: her cihaz yalnızca kendi paketlerini yazar.
+  Future<void> delete(String fileId);
 }
 
 /// Testler için bellek içi depo.
@@ -42,6 +46,11 @@ class MemorySyncStore implements SyncStore {
   @override
   Future<void> update(String fileId, Uint8List data) async {
     files[fileId] = (files[fileId]!.$1, data);
+  }
+
+  @override
+  Future<void> delete(String fileId) async {
+    files.remove(fileId);
   }
 }
 
@@ -101,5 +110,10 @@ class DriveSyncStore implements SyncStore {
       fileId,
       uploadMedia: drive.Media(Stream.value(data), data.length),
     );
+  }
+
+  @override
+  Future<void> delete(String fileId) async {
+    await api.files.delete(fileId);
   }
 }

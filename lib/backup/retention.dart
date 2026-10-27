@@ -1,12 +1,15 @@
-/// Yedek dosya adı: notlar-yedek-2026-10-15_14-32-05.7z
+/// Yedek dosya adı: notlar-yedek-2026-10-15_14-32-05.7z (masaüstü)
+/// ya da .zip (telefon).
+const backupNamePrefix = 'notlar-yedek-';
+
 final backupNamePattern = RegExp(
-    r'^notlar-yedek-(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.7z$');
+    r'^notlar-yedek-(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.(7z|zip)$');
 
 String _two(int v) => v.toString().padLeft(2, '0');
 
-String backupFileName(DateTime t) =>
+String backupFileName(DateTime t, {String ext = '7z'}) =>
     'notlar-yedek-${t.year}-${_two(t.month)}-${_two(t.day)}'
-    '_${_two(t.hour)}-${_two(t.minute)}-${_two(t.second)}.7z';
+    '_${_two(t.hour)}-${_two(t.minute)}-${_two(t.second)}.$ext';
 
 DateTime? parseBackupTime(String fileName) {
   final m = backupNamePattern.firstMatch(fileName);

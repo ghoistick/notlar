@@ -43,7 +43,9 @@ kotlin {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
-
+dependencies {
+    implementation("net.lingala.zip4j:zip4j:2.11.5")
+}
 flutter {
     source = "../.."
 }

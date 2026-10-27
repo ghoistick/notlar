@@ -161,7 +161,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 );
               },
             ),
-            if (Platform.isWindows || Platform.isLinux)
+            
             ListenableBuilder(
               listenable: ref.watch(backupServiceProvider),
               builder: (context, _) {

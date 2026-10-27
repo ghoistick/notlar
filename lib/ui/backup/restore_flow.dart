@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../backup/backup_service.dart';
 import '../../backup/restore.dart';
 import '../../data/repository/notes_repository.dart';
+import '../../sync/google_account.dart';
 import '../common/format.dart';
 import '../home/home_state.dart';
 import '../lock/lock_widgets.dart';
@@ -15,16 +16,93 @@ import '../lock/lock_widgets.dart';
 /// klasörler ve etiketler eklenir.
 Future<void> restoreFromBackup(BuildContext context, WidgetRef ref) async {
   final service = ref.read(backupServiceProvider);
-  final repo = ref.read(repositoryProvider);
 
   final file = await openFile(
     acceptedTypeGroups: const [
-      XTypeGroup(label: 'Müsvedde yedekleri', extensions: ['7z']),
+      XTypeGroup(
+        label: 'Müsvedde yedekleri',
+        extensions: ['7z', 'zip'],
+        mimeTypes: ['application/zip', 'application/x-7z-compressed'],
+      ),
     ],
-    initialDirectory: service.directory,
+    initialDirectory: service.toDrive ? null : service.directory,
     confirmButtonText: 'Seç',
   );
   if (file == null || !context.mounted) return;
+
+  await _restore(
+    context,
+    ref,
+    (password) => service.readBackup(file.path, password: password),
+  );
+}
+
+/// Drive'daki yedeklerden birini seçip geri yükler (telefon).
+Future<void> restoreFromDrive(BuildContext context, WidgetRef ref) async {
+  final service = ref.read(backupServiceProvider);
+
+  final List<RemoteBackup> backups;
+  try {
+    backups = await _withProgress(
+        context, 'Drive\'daki yedekler alınıyor…', service.remoteBackups);
+  } catch (e) {
+    if (context.mounted) {
+      await _info(context, 'Yedekler alınamadı', _describe(e));
+    }
+    return;
+  }
+  if (!context.mounted) return;
+  if (backups.isEmpty) {
+    await _info(context, 'Yedek yok', 'Drive\'da henüz bir yedek bulunmuyor.');
+    return;
+  }
+
+  final chosen = await showDialog<RemoteBackup>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Drive\'daki yedekler'),
+      content: SizedBox(
+        width: 420,
+        height: 360,
+        child: ListView.builder(
+          itemCount: backups.length,
+          itemBuilder: (_, i) {
+            final b = backups[i];
+            return ListTile(
+              leading: const Icon(Icons.cloud_outlined),
+              title: Text(formatLongDate(b.time.millisecondsSinceEpoch)),
+              subtitle: Text(b.file.name),
+              onTap: () => Navigator.of(ctx).pop(b),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('İptal'),
+        ),
+      ],
+    ),
+  );
+  if (chosen == null || !context.mounted) return;
+
+  await _restore(
+    context,
+    ref,
+    (password) => service.readRemoteBackup(chosen, password: password),
+  );
+}
+
+String _describe(Object e) => e is BackupException ? e.message : describeGoogleError(e);
+
+/// Ortak akış: aç (gerekirse parola sor) → önizleme → onay → uygula.
+Future<void> _restore(
+  BuildContext context,
+  WidgetRef ref,
+  Future<BackupContent> Function(String? password) open,
+) async {
+  final repo = ref.read(repositoryProvider);
 
   // ---- Arşivi aç
   BackupContent? content;
@@ -32,8 +110,7 @@ Future<void> restoreFromBackup(BuildContext context, WidgetRef ref) async {
   String? passwordError;
   while (content == null) {
     try {
-      content = await _withProgress(context, 'Yedek açılıyor…',
-          () => service.readBackup(file.path, password: password));
+      content = await _withProgress(context, 'Yedek açılıyor…', () => open(password));
     } on BackupPasswordRequired {
       if (!context.mounted) return;
       password = await _askPassword(context, error: passwordError);
@@ -49,6 +126,9 @@ Future<void> restoreFromBackup(BuildContext context, WidgetRef ref) async {
       if (password == null) return;
     } on InvalidBackupException catch (e) {
       if (context.mounted) await _info(context, 'Geçersiz yedek', e.message);
+      return;
+    } catch (e) {
+      if (context.mounted) await _info(context, 'Yedek açılamadı', _describe(e));
       return;
     }
   }
