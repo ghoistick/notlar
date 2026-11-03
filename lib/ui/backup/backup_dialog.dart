@@ -72,9 +72,18 @@ class _BackupDialog extends StatelessWidget {
   Future<void> _backupNow(BuildContext context) async {
     final ok = await service.backupNow();
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(ok ? 'Yedek alındı ve doğrulandı.' : 'Yedek alınamadı.'),
-    ));
+    final String msg;
+    if (!ok) {
+      msg = 'Yedek alınamadı.';
+    } else if (service.toDrive) {
+      msg = 'Yedek Google Drive\'a (uygulama klasörü) alındı ve doğrulandı.';
+    } else {
+      final file = service.lastFile;
+      msg = file == null
+          ? 'Yedek alındı ve doğrulandı.'
+          : 'Yedek alındı ve doğrulandı: $file';
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -277,8 +286,18 @@ class _StatusBox extends StatelessWidget {
       icon = Icons.error_outline;
       color = scheme.error;
     } else if (s.lastSuccessAt != null) {
-      text = 'Son yedek: '
-          '${formatLongDate(s.lastSuccessAt!.millisecondsSinceEpoch)}';
+      final when = formatLongDate(s.lastSuccessAt!.millisecondsSinceEpoch);
+      final file = s.lastFile;
+      final String where;
+      if (s.toDrive) {
+        // Telefonda lastFile "Drive: notlar-yedek-....zip" biçimindedir.
+        final name = file?.replaceFirst('Drive: ', '');
+        where = '\nKonum: Google Drive (uygulama klasörü)'
+            '${name == null ? '' : '\n$name'}';
+      } else {
+        where = file == null ? '' : '\nKonum: $file';
+      }
+      text = 'Son yedek: $when$where';
     } else {
       text = 'Henüz yedek alınmadı.';
       icon = Icons.info_outline;

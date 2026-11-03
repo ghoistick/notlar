@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\build_release.ps1
 #
 # 1. pubspec.yaml'dan sürüm numarasını okur
-# 2. Windows sürümünü derler (flutter build windows --release)
+# 2. Windows sürümünü derler (flutter build windows --no-pub --release)
 # 3. Inno Setup ile dist\MusveddeKurulum-<sürüm>.exe dosyasını üretir
 # 4. Kurulum dosyasını imzalar ve dist\latest.json dosyasını yazar
 
@@ -23,7 +23,7 @@ if (-not (Test-Path $googleConfig)) {
     throw "Google istemci bilgileri bulunamadı: $googleConfig"
 }
 
-flutter build windows --release --dart-define=APP_VERSION=$version --dart-define-from-file="$googleConfig"
+flutter build windows --no-pub --release --dart-define=APP_VERSION=$version --dart-define-from-file="$googleConfig"
 if ($LASTEXITCODE -ne 0) { throw 'Flutter derlemesi başarısız oldu.' }
 
 # Inno Setup'ı sürüm numarasından bağımsız ara: kullanıcı ve sistem

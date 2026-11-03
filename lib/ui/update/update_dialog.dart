@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../app/session.dart';
 import '../../backup/backup_service.dart';
@@ -112,7 +113,9 @@ class _AboutDialog extends StatelessWidget {
 
         Widget status;
         if (!UpdateService.supported) {
-          status = const Text('Güncelleme denetimi şimdilik yalnızca Windows sürümünde var.');
+                    status = Text(theme.platform == TargetPlatform.android
+              ? 'Telefonda güncellemeler Google Play üzerinden otomatik olarak gelir.'
+              : 'Güncelleme denetimi bu platformda henüz yok.');
         } else if (s.checking) {
           status = const Row(children: [
             SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
