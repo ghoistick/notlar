@@ -52,6 +52,9 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# VS 2026 derleyicisi local_auth_windows'un kullandığı eski coroutine
+# başlıklarını hata sayıyor; eklenti güncellenene kadar uyarıya çevir.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
