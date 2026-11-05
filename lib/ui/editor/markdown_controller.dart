@@ -180,6 +180,24 @@ class HeadingRef {
 
 enum ListKind { bullet, task, ordered }
 
+/// Not içi arama seçenekleri (Aa, ab, .*).
+class FindOptions {
+  /// Büyük/küçük harf ve Türkçe karakter duyarlı.
+  final bool matchCase;
+
+  /// Yalnızca tam kelimeler.
+  final bool wholeWord;
+
+  /// Düzenli ifade.
+  final bool regex;
+
+  const FindOptions({
+    this.matchCase = false,
+    this.wholeWord = false,
+    this.regex = false,
+  });
+}
+
 /// Yazarken biçimlenen Markdown editörünün denetleyicisi.
 ///
 /// Metin her zaman düz Markdown olarak kalır; biçim yalnızca görüntüdür.
@@ -461,18 +479,130 @@ class MarkdownEditingController extends TextEditingController {
     notifyListeners();
   }
 
-  /// Türkçe karakter ve büyük/küçük harf farkı gözetmeden tüm eşleşmeler.
-  static List<TextRange> findAll(String text, String query) {
+  /// Tüm eşleşmeler. Seçenek verilmezse Türkçe karakter ve büyük/küçük harf
+  /// farkı gözetilmez. Düzenli ifade geçersizse [FormatException] fırlatır.
+  static List<TextRange> findAll(String text, String query,
+      [FindOptions options = const FindOptions()]) {
     if (query.isEmpty) return const [];
-    final haystack = foldSameLength(text);
-    final needle = foldSameLength(query);
     final out = <TextRange>[];
+
+    if (options.regex) {
+      for (final m in _regExpFor(query, options).allMatches(text)) {
+        if (m.end == m.start) continue; // boş eşleşmeler (ör. ^ ya da a*) atlanır
+        if (options.wholeWord && !_isWholeWord(text, m.start, m.end)) continue;
+        out.add(TextRange(start: m.start, end: m.end));
+      }
+      return out;
+    }
+
+    // foldSameLength uzunluğu korur; konumlar özgün metinle aynıdır.
+    final haystack = options.matchCase ? text : foldSameLength(text);
+    final needle = options.matchCase ? query : foldSameLength(query);
     var i = haystack.indexOf(needle);
     while (i >= 0) {
-      out.add(TextRange(start: i, end: i + needle.length));
-      i = haystack.indexOf(needle, i + needle.length);
+      final e = i + needle.length;
+      if (!options.wholeWord || _isWholeWord(text, i, e)) {
+        out.add(TextRange(start: i, end: e));
+        i = haystack.indexOf(needle, e);
+      } else {
+        i = haystack.indexOf(needle, i + 1);
+      }
     }
     return out;
+  }
+
+  /// Her eşleşmenin yerine yazılacak metin. Düzenli ifadede `$1`, `$2`…
+  /// gruplar, `$&` eşleşmenin tamamı, `$$` tek bir `$` olur.
+  static List<String> replacementsFor(String text, List<TextRange> ranges,
+      String query, String replacement, FindOptions options) {
+    if (!options.regex) return [for (final _ in ranges) replacement];
+    final re = _regExpFor(query, options);
+    return [
+      for (final r in ranges)
+        switch (re.matchAsPrefix(text, r.start)) {
+          final m? => expandReplacement(m, replacement),
+          null => replacement,
+        },
+    ];
+  }
+
+  static String expandReplacement(Match m, String template) {
+    final b = StringBuffer();
+    for (var i = 0; i < template.length; i++) {
+      final c = template[i];
+      if (c != r'$' || i + 1 >= template.length) {
+        b.write(c);
+        continue;
+      }
+      final n = template[i + 1];
+      if (n == r'$') {
+        b.write(r'$');
+        i++;
+        continue;
+      }
+      if (n == '&') {
+        b.write(m[0]);
+        i++;
+        continue;
+      }
+      final d1 = _digit(n);
+      if (d1 != null) {
+        var group = d1;
+        var used = 1;
+        if (i + 2 < template.length) {
+          final d2 = _digit(template[i + 2]);
+          if (d2 != null && group * 10 + d2 <= m.groupCount) {
+            group = group * 10 + d2;
+            used = 2;
+          }
+        }
+        if (group <= m.groupCount) {
+          b.write(m[group] ?? '');
+          i += used;
+          continue;
+        }
+      }
+      b.write(c);
+    }
+    return b.toString();
+  }
+
+  static RegExp _regExpFor(String query, FindOptions o) =>
+      RegExp(query, caseSensitive: o.matchCase, multiLine: true);
+
+  static final _wordChar = RegExp(r'[\p{L}\p{N}_]', unicode: true);
+
+  static bool _isWordAt(String t, int i) =>
+      i >= 0 && i < t.length && _wordChar.hasMatch(t[i]);
+
+  static bool _isWholeWord(String t, int start, int end) =>
+      !_isWordAt(t, start - 1) && !_isWordAt(t, end);
+
+  static int? _digit(String c) {
+    final d = c.codeUnitAt(0) - 48;
+    return d >= 0 && d <= 9 ? d : null;
+  }
+
+  /// Aralıkları (artan sırada, çakışmasız) tek bir düzenlemede değiştirir;
+  /// böylece Ctrl+Z hepsini tek adımda geri alır. İmleç son değişikliğin
+  /// sonuna gelir.
+  void replaceRanges(List<TextRange> ranges, List<String> replacements) {
+    if (ranges.isEmpty) return;
+    final t = text;
+    final b = StringBuffer();
+    var last = 0;
+    for (var i = 0; i < ranges.length; i++) {
+      b
+        ..write(t.substring(last, ranges[i].start))
+        ..write(replacements[i]);
+      last = ranges[i].end;
+    }
+    final caret = b.length;
+    b.write(t.substring(last));
+    value = TextEditingValue(
+      text: b.toString(),
+      selection: TextSelection.collapsed(offset: caret),
+    );
   }
 
   // ------------------------------------------------------------- Düzenleme

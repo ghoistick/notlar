@@ -40,6 +40,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   final _bodyFocus = FocusNode();
   final _find = TextEditingController();
   final _findFocus = FocusNode();
+  final _replace = TextEditingController();
 
   late final NotesRepository _repo;
   Timer? _saveTimer;
@@ -55,6 +56,15 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   List<TextRange> _matches = const [];
   int _current = -1;
   String? _lastFindText;
+  bool _replaceMode = false;
+  bool _matchCase = false;
+  bool _wholeWord = false;
+  bool _regex = false;
+  String? _findError;
+  String? _replaceInfo;
+
+  /// Not çöp kutusundaysa salt okunur; build içinde güncellenir.
+  bool _readOnly = false;
 
   @override
   void initState() {
@@ -121,6 +131,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     _bodyFocus.dispose();
     _find.dispose();
     _findFocus.dispose();
+    _replace.dispose();
     super.dispose();
   }
 
@@ -160,6 +171,8 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   Map<ShortcutActivator, VoidCallback> get _editorShortcuts => {
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
             _openFind,
+        const SingleActivator(LogicalKeyboardKey.keyH, control: true): () =>
+            _openFind(replace: true),
         const SingleActivator(LogicalKeyboardKey.escape): () {
           if (_findOpen) _closeFind();
         },
@@ -219,15 +232,23 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     );
   }
 
-  // -------------------------------------------------------- Not içi arama
+  // ------------------------------------------------- Not içi arama / değiştir
 
-  void _openFind() {
+  FindOptions get _options => FindOptions(
+      matchCase: _matchCase, wholeWord: _wholeWord, regex: _regex);
+
+  /// Ctrl+F arama çubuğunu, Ctrl+H değiştirme satırıyla birlikte açar.
+  void _openFind({bool replace = false}) {
     final sel = _body.selection;
     if (sel.isValid && !sel.isCollapsed) {
       final s = _body.text.substring(sel.start, sel.end);
       if (!s.contains('\n') && s.length <= 80) _find.text = s;
     }
-    setState(() => _findOpen = true);
+    setState(() {
+      _findOpen = true;
+      _replaceMode = replace && !_readOnly;
+      _replaceInfo = null;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _findFocus.requestFocus();
       _find.selection =
@@ -239,30 +260,47 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   void _closeFind() {
     setState(() {
       _findOpen = false;
+      _replaceMode = false;
       _matches = const [];
       _current = -1;
+      _findError = null;
+      _replaceInfo = null;
     });
     _body.setSearchMatches(const [], -1);
     _bodyFocus.requestFocus();
   }
 
-  void _runFind({bool reveal = true}) {
+  /// Eşleşmeleri yeniden bulur. [from] verilirse o konumdan sonraki ilk
+  /// eşleşme seçilir (değiştirdikten sonra sıradakine geçmek için).
+  void _runFind({bool reveal = true, int? from}) {
     _lastFindText = _body.text;
-    final matches = MarkdownEditingController.findAll(_body.text, _find.text);
+    List<TextRange> matches;
+    String? error;
+    try {
+      matches = MarkdownEditingController.findAll(
+          _body.text, _find.text, _options);
+    } on FormatException catch (e) {
+      matches = const [];
+      error = 'Geçersiz düzenli ifade: ${e.message}';
+    }
 
     var current = -1;
     if (matches.isNotEmpty) {
-      if (!reveal && _current >= 0) {
+      if (from != null) {
+        current = matches.indexWhere((m) => m.start >= from);
+        if (current < 0) current = 0;
+      } else if (!reveal && _current >= 0) {
         current = min(_current, matches.length - 1);
       } else {
-        final from = _body.selection.isValid ? _body.selection.start : 0;
-        current = matches.indexWhere((m) => m.start >= from);
+        final start = _body.selection.isValid ? _body.selection.start : 0;
+        current = matches.indexWhere((m) => m.start >= start);
         if (current < 0) current = 0;
       }
     }
     setState(() {
       _matches = matches;
       _current = current;
+      _findError = error;
     });
     _body.setSearchMatches(matches, current);
     if (reveal && current >= 0) _reveal(current);
@@ -283,13 +321,102 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _bringIntoView(m.start));
   }
 
-  Widget _findBar(ThemeData theme) {
-    final status = _matches.isEmpty
-        ? (_find.text.isEmpty ? '' : 'Sonuç yok')
-        : '${_current + 1}/${_matches.length}';
+  void _toggleOption(void Function() change) {
+    setState(() {
+      change();
+      _replaceInfo = null;
+    });
+    _runFind();
+  }
+
+  bool get _canReplace =>
+      !_readOnly && _findError == null && _matches.isNotEmpty && _current >= 0;
+
+  /// Seçili eşleşmeyi değiştirir ve sıradakine geçer.
+  void _replaceCurrent() {
+    if (!_canReplace) return;
+    final m = _matches[_current];
+    final rep = MarkdownEditingController.replacementsFor(
+        _body.text, [m], _find.text, _replace.text, _options).first;
+    _body.replaceRanges([m], [rep]);
+    setState(() => _replaceInfo = null);
+    _runFind(from: m.start + rep.length);
+  }
+
+  /// Hepsini tek düzenlemede değiştirir; notta Ctrl+Z tek adımda geri alır.
+  void _replaceAll() {
+    if (!_canReplace) return;
+    final text = _body.text;
+    final matches =
+        MarkdownEditingController.findAll(text, _find.text, _options);
+    if (matches.isEmpty) return;
+    final reps = MarkdownEditingController.replacementsFor(
+        text, matches, _find.text, _replace.text, _options);
+    _body.replaceRanges(matches, reps);
+    setState(() => _replaceInfo =
+        '${matches.length} değişiklik yapıldı. Geri almak için notta Ctrl+Z.');
+    _runFind(reveal: false);
+  }
+
+  Widget _optionToggle(
+      String label, String tooltip, bool value, void Function() change) {
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(children: [
+      padding: const EdgeInsets.only(left: 4),
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => _toggleOption(change),
+          child: Container(
+            width: 30,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: value ? scheme.primaryContainer : null,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: value ? scheme.primary : scheme.outlineVariant),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontFamily: MarkdownTheme.monoFamily,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: value
+                    ? scheme.onPrimaryContainer
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _findBar(ThemeData theme, bool readOnly) {
+    final scheme = theme.colorScheme;
+    final muted =
+        theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final status = _matches.isEmpty
+        ? (_find.text.isEmpty || _findError != null ? '' : 'Sonuç yok')
+        : '${_current + 1}/${_matches.length}';
+    final message = _findError ?? _replaceInfo;
+
+    return LayoutBuilder(builder: (context, c) {
+      final narrow = c.maxWidth < 560;
+
+      final options = Row(mainAxisSize: MainAxisSize.min, children: [
+        _optionToggle('Aa', 'Büyük/küçük harf ve Türkçe karakter duyarlı',
+            _matchCase, () => _matchCase = !_matchCase),
+        _optionToggle('ab', 'Yalnızca tam kelime', _wholeWord,
+            () => _wholeWord = !_wholeWord),
+        _optionToggle('.*', 'Düzenli ifade', _regex, () => _regex = !_regex),
+      ]);
+      final statusText = Text(status, textAlign: TextAlign.center, style: muted);
+
+      final findRow = Row(children: [
         Expanded(
           child: CallbackShortcuts(
             bindings: {
@@ -300,7 +427,10 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             child: TextField(
               controller: _find,
               focusNode: _findFocus,
-              onChanged: (_) => _runFind(),
+              onChanged: (_) {
+                _replaceInfo = null;
+                _runFind();
+              },
               onSubmitted: (_) => _step(1),
               onEditingComplete: () {}, // Enter odağı kaybettirmesin
               decoration: const InputDecoration(
@@ -311,14 +441,11 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             ),
           ),
         ),
-        const SizedBox(width: 10),
-        SizedBox(
-          width: 64,
-          child: Text(status,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-        ),
+        if (!narrow) ...[
+          const SizedBox(width: 6),
+          options,
+          SizedBox(width: 64, child: statusText),
+        ],
         IconButton(
           tooltip: 'Önceki (Shift+Enter)',
           icon: const Icon(Icons.keyboard_arrow_up),
@@ -329,13 +456,84 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
           icon: const Icon(Icons.keyboard_arrow_down),
           onPressed: _matches.isEmpty ? null : () => _step(1),
         ),
+        if (!readOnly)
+          IconButton(
+            tooltip: 'Değiştir (Ctrl+H)',
+            isSelected: _replaceMode,
+            icon: const Icon(Icons.find_replace, size: 20),
+            onPressed: () => setState(() {
+              _replaceMode = !_replaceMode;
+              _replaceInfo = null;
+            }),
+          ),
         IconButton(
           tooltip: 'Kapat (Esc)',
           icon: const Icon(Icons.close, size: 20),
           onPressed: _closeFind,
         ),
-      ]),
-    );
+      ]);
+
+      final replaceRow = Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(children: [
+          Expanded(
+            child: CallbackShortcuts(
+              bindings: {
+                const SingleActivator(LogicalKeyboardKey.escape): _closeFind,
+              },
+              child: TextField(
+                controller: _replace,
+                onSubmitted: (_) => _replaceCurrent(),
+                onEditingComplete: () {}, // Enter odağı kaybettirmesin
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: _regex ? r'Yerine ($1, $2… gruplar)' : 'Yerine',
+                  prefixIcon: const Icon(Icons.edit_outlined, size: 18),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          TextButton(
+            onPressed: _canReplace ? _replaceCurrent : null,
+            child: const Text('Değiştir'),
+          ),
+          TextButton(
+            onPressed: _canReplace ? _replaceAll : null,
+            child: Text(narrow ? 'Tümü' : 'Tümünü değiştir'),
+          ),
+        ]),
+      );
+
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            findRow,
+            if (narrow)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(children: [
+                  options,
+                  const SizedBox(width: 12),
+                  statusText,
+                ]),
+              ),
+            if (_replaceMode && !readOnly) replaceRow,
+            if (message != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Text(
+                  message,
+                  style: muted?.copyWith(
+                      color: _findError != null ? scheme.error : null),
+                ),
+              ),
+          ],
+        ),
+      );
+    });
   }
 
   // ----------------------------------------------------------------- Görünüm
@@ -351,6 +549,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     }
 
     final readOnly = note.deletedAt != null;
+    _readOnly = readOnly;
     final tint = tintFor(context, note.color);
     _body.theme = MarkdownTheme.of(context);
 
@@ -420,7 +619,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
                 ),
               ),
             ],
-            if (_findOpen) _findBar(theme),
+            if (_findOpen) _findBar(theme, readOnly),
             const SizedBox(height: 6),
             const Divider(),
             const SizedBox(height: 10),
