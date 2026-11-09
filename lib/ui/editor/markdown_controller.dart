@@ -16,6 +16,9 @@ class MarkdownTheme {
   final Color match;
   final Color currentMatch;
 
+  /// Sütun seçiminin vurgu rengi (metin seçimiyle aynı).
+  final Color selection;
+
   static const monoFamily = 'IBM Plex Mono';
   static const monoFallback = [
     'Consolas',
@@ -31,6 +34,7 @@ class MarkdownTheme {
     required this.codeBackground,
     required this.match,
     required this.currentMatch,
+    this.selection = const Color(0x553D7BFD),
   });
 
   factory MarkdownTheme.of(BuildContext context) {
@@ -45,6 +49,8 @@ class MarkdownTheme {
       codeBackground: scheme.onSurface.withValues(alpha: 0.06),
       match: orange.withValues(alpha: dark ? 0.28 : 0.22),
       currentMatch: orange.withValues(alpha: dark ? 0.70 : 0.55),
+      selection: theme.textSelectionTheme.selectionColor ??
+          scheme.primary.withValues(alpha: 0.4),
     );
   }
 
@@ -180,6 +186,26 @@ class HeadingRef {
 
 enum ListKind { bullet, task, ordered }
 
+/// Sütun (dikdörtgen) seçimi: çapa ve etkin uç, satır/sütun cinsinden.
+/// Sütun, satır içindeki karakter sırasıdır; kısa satırlarda satır sonuna
+/// kısılır.
+class _ColumnState {
+  final int anchorLine;
+  final int anchorCol;
+  final int activeLine;
+  final int activeCol;
+
+  const _ColumnState(
+      this.anchorLine, this.anchorCol, this.activeLine, this.activeCol);
+
+  int get firstLine => min(anchorLine, activeLine);
+  int get lastLine => max(anchorLine, activeLine);
+  int get minCol => min(anchorCol, activeCol);
+  int get maxCol => max(anchorCol, activeCol);
+}
+
+enum _ColumnOp { replace, deleteBefore, deleteAfter }
+
 /// Not içi arama seçenekleri (Aa, ab, .*).
 class FindOptions {
   /// Büyük/küçük harf ve Türkçe karakter duyarlı.
@@ -213,6 +239,8 @@ class MarkdownEditingController extends TextEditingController {
   List<TextRange> _matches = const [];
   int _currentMatch = -1;
 
+  _ColumnState? _column;
+
   String? _cacheText;
   List<ParsedLine> _cacheLines = const [];
 
@@ -230,13 +258,24 @@ class MarkdownEditingController extends TextEditingController {
   void setFocused(bool focused) {
     if (_focused == focused) return;
     _focused = focused;
+    if (!focused) _column = null; // odak giderse sütun seçimi biter
     notifyListeners();
   }
 
   /// Seçim katlanmış bir bölüme girerse (ok tuşu, arama, geri alma...)
   /// o bölüm otomatik açılır; görünmeyen metin düzenlenmez.
+  ///
+  /// Sütun seçimi açıkken etkin satırdaki yazma, Backspace ve Delete tüm
+  /// satırlara uygulanır; başka her değişiklik (ok tuşu, tıklama, Enter,
+  /// geri alma...) sütun seçimini bitirir ve olduğu gibi uygulanır.
   @override
   set value(TextEditingValue newValue) {
+    if (_column != null) {
+      if (_applyColumnEdit(newValue)) return;
+      if (newValue.text != text || newValue.selection != selection) {
+        _column = null;
+      }
+    }
     super.value = newValue;
     _revealSelection();
   }
@@ -260,29 +299,35 @@ class MarkdownEditingController extends TextEditingController {
     };
     final active = _focused ? _activeLines(lines) : null;
 
+    // Sütun seçimi açıkken arama vurguları yerine seçili parçalar gösterilir.
+    final column = _column;
+    final marks = column != null ? columnRanges() : _matches;
+
     final children = <InlineSpan>[];
     var mi = 0;
 
     // Arama eşleşmelerini parçalara bölerek vurgular.
     void emit(String s, int absStart, TextStyle st, {required bool plain}) {
-      if (plain || _matches.isEmpty) {
+      if (plain || marks.isEmpty) {
         children.add(TextSpan(text: s, style: st));
         return;
       }
       final absEnd = absStart + s.length;
-      while (mi < _matches.length && _matches[mi].end <= absStart) {
+      while (mi < marks.length && marks[mi].end <= absStart) {
         mi++;
       }
       var pos = 0;
-      for (var k = mi; k < _matches.length && _matches[k].start < absEnd; k++) {
-        final m = _matches[k];
+      for (var k = mi; k < marks.length && marks[k].start < absEnd; k++) {
+        final m = marks[k];
         final a = max(m.start, absStart) - absStart;
         final b = min(m.end, absEnd) - absStart;
         if (a > pos) children.add(TextSpan(text: s.substring(pos, a), style: st));
         children.add(TextSpan(
           text: s.substring(a, b),
           style: st.copyWith(
-              backgroundColor: k == _currentMatch ? t.currentMatch : t.match),
+              backgroundColor: column != null
+                  ? t.selection
+                  : (k == _currentMatch ? t.currentMatch : t.match)),
         ));
         pos = b;
         if (m.end > absEnd) break;
@@ -321,6 +366,10 @@ class MarkdownEditingController extends TextEditingController {
   }
 
   (int, int)? _activeLines(List<ParsedLine> lines) {
+    // Sütun seçiminde tüm satırlar etkindir: işaretler görünür, böylece
+    // sütunlar gerçek karakter konumlarıyla örtüşür.
+    final c = _column;
+    if (c != null) return (c.firstLine, c.lastLine);
     final sel = selection;
     if (!sel.isValid) return null;
     return (_lineIndexOf(lines, sel.start), _lineIndexOf(lines, sel.end));
@@ -457,11 +506,16 @@ class MarkdownEditingController extends TextEditingController {
 
   void _revealSelection() {
     if (_folded.isEmpty || !selection.isValid) return;
+    final lines = parsedLines;
+    _revealLines(
+        _lineIndexOf(lines, selection.start), _lineIndexOf(lines, selection.end));
+  }
+
+  /// [a]..[b] satırlarını gizleyen katlamaları açar.
+  void _revealLines(int a, int b) {
+    if (_folded.isEmpty) return;
     final owners = _hiddenOwners(headingRefs());
     if (owners.isEmpty) return;
-    final lines = parsedLines;
-    final a = _lineIndexOf(lines, selection.start);
-    final b = _lineIndexOf(lines, selection.end);
     var changed = false;
     for (var l = a; l <= b; l++) {
       for (final key in owners[l] ?? const <String>[]) {
@@ -469,6 +523,198 @@ class MarkdownEditingController extends TextEditingController {
       }
     }
     if (changed) notifyListeners();
+  }
+
+  // ----------------------------------------------------------- Sütun seçimi
+
+  bool get hasColumnSelection => _column != null;
+
+  /// Alt+Shift+ok: sütun seçimini başlatır ya da etkin ucunu taşır.
+  /// [lines] satır, [cols] sütun kadar ilerler (negatif: yukarı/sola).
+  void extendColumn(int lines, int cols) {
+    final sel = selection;
+    if (!sel.isValid) return;
+    final parsed = parsedLines;
+    var c = _column;
+    if (c == null) {
+      final bl = _lineIndexOf(parsed, sel.baseOffset);
+      final el = _lineIndexOf(parsed, sel.extentOffset);
+      c = _ColumnState(bl, sel.baseOffset - parsed[bl].offset, el,
+          sel.extentOffset - parsed[el].offset);
+    }
+
+    final line = (c.activeLine + lines).clamp(0, parsed.length - 1);
+    var col = c.activeCol;
+    if (cols != 0) {
+      var widest = 0;
+      for (var l = min(c.anchorLine, line); l <= max(c.anchorLine, line); l++) {
+        widest = max(widest, parsed[l].text.length);
+      }
+      col = (col + cols).clamp(0, widest);
+    }
+
+    _column = _ColumnState(c.anchorLine, c.anchorCol, line, col);
+    _revealLines(min(c.anchorLine, line), max(c.anchorLine, line));
+    _syncColumnSelection();
+  }
+
+  /// Sütun seçimini bitirir. [collapse] ise imleç etkin uçta kalır.
+  void exitColumnSelection({bool collapse = true}) {
+    if (_column == null) return;
+    _column = null;
+    if (collapse && selection.isValid) {
+      super.value = value.copyWith(
+        selection: TextSelection.collapsed(offset: selection.extentOffset),
+        composing: TextRange.empty,
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Etkin satır dışındaki seçili parçalar (etkin satırı metin alanının
+  /// kendi seçimi gösterir). Boş parçalar dahil edilmez.
+  List<TextRange> columnRanges() {
+    final c = _column;
+    if (c == null) return const [];
+    final lines = parsedLines;
+    return [
+      for (var l = c.firstLine; l <= c.lastLine; l++)
+        if (l != c.activeLine)
+          if (_columnSegment(lines[l], c) case final r when !r.isCollapsed) r,
+    ];
+  }
+
+  /// Her satırdaki imleç konumu (etkin sütun, satır sonuna kısılmış).
+  List<int> columnCaretOffsets() {
+    final c = _column;
+    if (c == null) return const [];
+    final lines = parsedLines;
+    return [
+      for (var l = c.firstLine; l <= c.lastLine; l++)
+        lines[l].offset + min(c.activeCol, lines[l].text.length),
+    ];
+  }
+
+  static TextRange _columnSegment(ParsedLine pl, _ColumnState c) {
+    final len = pl.text.length;
+    return TextRange(
+        start: pl.offset + min(c.minCol, len),
+        end: pl.offset + min(c.maxCol, len));
+  }
+
+  /// Metin alanının seçimini etkin satırdaki parçaya eşitler.
+  void _syncColumnSelection() {
+    final c = _column!;
+    final pl = parsedLines[c.activeLine];
+    final len = pl.text.length;
+    super.value = value.copyWith(
+      selection: TextSelection(
+        baseOffset: pl.offset + min(c.anchorCol, len),
+        extentOffset: pl.offset + min(c.activeCol, len),
+      ),
+      composing: TextRange.empty,
+    );
+    notifyListeners();
+  }
+
+  /// Metin alanından gelen değişiklik etkin satırdaki seçimde yapılmış bir
+  /// yazma / silme ise tüm satırlara uygular ve true döner.
+  bool _applyColumnEdit(TextEditingValue nv) {
+    final c = _column!;
+    final old = text;
+    final nt = nv.text;
+    final sel = selection;
+    final ns = nv.selection;
+    if (nt == old || !sel.isValid || !ns.isValid || !ns.isCollapsed) {
+      return false;
+    }
+    final ps = sel.start;
+    final pe = sel.end;
+    final caret = ns.baseOffset;
+
+    _ColumnOp? op;
+    var insert = '';
+    var count = 0;
+    final xlen = nt.length - old.length + (pe - ps);
+    if (xlen >= 0 &&
+        (xlen > 0 || pe > ps) &&
+        caret == ps + xlen &&
+        nt.startsWith(old.substring(0, ps)) &&
+        nt.substring(ps + xlen) == old.substring(pe)) {
+      insert = nt.substring(ps, ps + xlen);
+      // Enter ya da çok satırlı yapıştırma: sütun seçimi biter.
+      if (insert.contains('\n') || insert.contains('\r')) return false;
+      op = _ColumnOp.replace;
+    } else if (ps == pe && nt.length < old.length) {
+      count = old.length - nt.length;
+      if (caret == ps - count &&
+          nt == old.substring(0, ps - count) + old.substring(ps)) {
+        op = _ColumnOp.deleteBefore;
+      } else if (caret == ps &&
+          ps + count <= old.length &&
+          nt == old.substring(0, ps) + old.substring(ps + count)) {
+        op = _ColumnOp.deleteAfter;
+      }
+    }
+    if (op == null) return false;
+
+    // Etkin satır kısa olduğu için genişliği görünmeyen bir seçimde
+    // Backspace/Delete, her satırdaki seçili parçayı siler.
+    if (op != _ColumnOp.replace && c.minCol != c.maxCol) {
+      op = _ColumnOp.replace;
+      insert = '';
+    }
+
+    final lines = parsedLines;
+    final ranges = <TextRange>[];
+    for (var l = c.firstLine; l <= c.lastLine; l++) {
+      final pl = lines[l];
+      final ls = pl.offset;
+      final le = ls + pl.text.length;
+       final cc = ls + min<int>(c.activeCol, pl.text.length);
+      ranges.add(switch (op) {
+        _ColumnOp.replace => _columnSegment(pl, c),
+        // Satır başında/sonunda durur: satırlar birleşmez.
+        _ColumnOp.deleteBefore => TextRange(start: max(ls, cc - count), end: cc),
+        _ColumnOp.deleteAfter => TextRange(start: cc, end: min(le, cc + count)),
+      });
+    }
+
+    final newCol = switch (op) {
+      _ColumnOp.replace => c.minCol + insert.length,
+      _ColumnOp.deleteBefore => max(0, c.activeCol - count),
+      _ColumnOp.deleteAfter => c.activeCol,
+    };
+
+    final b = StringBuffer();
+    var last = 0;
+    var shift = 0;
+    var newCaret = 0;
+    for (var i = 0; i < ranges.length; i++) {
+      final r = ranges[i];
+      b
+        ..write(old.substring(last, r.start))
+        ..write(insert);
+      last = r.end;
+      final delta = insert.length - (r.end - r.start);
+      final l = c.firstLine + i;
+      if (l == c.activeLine) {
+        final pl = lines[l];
+        newCaret = pl.offset + shift + min(newCol, pl.text.length + delta);
+      }
+      shift += delta;
+    }
+    b.write(old.substring(last));
+
+    _column = _ColumnState(c.anchorLine, newCol, c.activeLine, newCol);
+    super.value = TextEditingValue(
+      text: b.toString(),
+      selection: TextSelection.collapsed(offset: newCaret),
+    );
+    // Değer değişmemiş olsa da (ör. satır başında Backspace) metin alanı
+    // platformdaki durumu yeniden eşitlesin.
+    notifyListeners();
+    return true;
   }
 
   // ------------------------------------------------------------ Not içi arama
