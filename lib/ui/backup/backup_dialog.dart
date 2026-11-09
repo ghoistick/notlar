@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -8,7 +9,6 @@ import '../../backup/backup_service.dart';
 import '../../sync/google_account.dart';
 import '../common/format.dart';
 import '../lock/lock_widgets.dart';
-import '../sync/sync_dialog.dart';
 import 'restore_flow.dart';
 
 /// Pencere kendi `ref`ini kullanır; çağıran widget kapanmış olsa da
@@ -22,7 +22,6 @@ Future<void> showBackupDialog(BuildContext context, [WidgetRef? _]) {
         google: ref.watch(googleAccountProvider),
         onRestore: () => restoreFromBackup(ctx, ref),
         onRestoreDrive: () => restoreFromDrive(ctx, ref),
-        onOpenSync: () => showSyncDialog(ctx),
       ),
     ),
   );
@@ -33,13 +32,11 @@ class _BackupDialog extends StatelessWidget {
   final GoogleAccount google;
   final VoidCallback onRestore;
   final VoidCallback onRestoreDrive;
-  final VoidCallback onOpenSync;
   const _BackupDialog({
     required this.service,
     required this.google,
     required this.onRestore,
     required this.onRestoreDrive,
-    required this.onOpenSync,
   });
 
   Future<void> _changeDirectory(BuildContext context) async {
@@ -69,21 +66,157 @@ class _BackupDialog extends StatelessWidget {
     if (password != null) await service.setPassword(password);
   }
 
+  /// Kayıtlı Google oturumu açılış sırasında okunur; pencere o bitmeden
+  /// açıldıysa kısa bir süre bekler.
+  Future<void> _waitForGoogle() async {
+    if (google.loaded) return;
+    final done = Completer<void>();
+    void check() {
+      if (google.loaded && !done.isCompleted) done.complete();
+    }
+
+    google.addListener(check);
+    try {
+      await done.future.timeout(const Duration(seconds: 10), onTimeout: () {});
+    } finally {
+      google.removeListener(check);
+    }
+  }
+
+  /// "Şimdi yedekle" her zaman basılabilir: eksik olan (parola, Drive
+  /// bağlantısı) sırayla istenir, sonra yedek alınır.
   Future<void> _backupNow(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    void say(String msg) =>
+        messenger.showSnackBar(SnackBar(content: Text(msg)));
+
+    if (!service.hasPassword) {
+      await _setPassword(context);
+      if (!service.hasPassword) return; // vazgeçildi
+    }
+
+    if (service.toDrive && !service.driveConnected) {
+      await _waitForGoogle();
+      if (!service.driveConnected) {
+        if (google.busy) return; // bağlanma zaten sürüyor
+        await google.connect();
+        if (!service.driveConnected) {
+          say(google.error ?? 'Google Drive\'a bağlanılamadı.');
+          return;
+        }
+      }
+    }
+
     final ok = await service.backupNow();
-    if (!context.mounted) return;
-    final String msg;
     if (!ok) {
-      msg = 'Yedek alınamadı.';
+      say(service.lastError ?? 'Yedek alınamadı.');
     } else if (service.toDrive) {
-      msg = 'Yedek Google Drive\'a (uygulama klasörü) alındı ve doğrulandı.';
+      say('Yedek Google Drive\'a (uygulama klasörü) alındı ve doğrulandı.');
     } else {
       final file = service.lastFile;
-      msg = file == null
+      say(file == null
           ? 'Yedek alındı ve doğrulandı.'
-          : 'Yedek alındı ve doğrulandı: $file';
+          : 'Yedek alındı ve doğrulandı: $file');
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Yedeğin gideceği yer ve "Şimdi yedekle" düğmesi: pencerenin başında.
+  Widget _destination(BuildContext context, BackupService s) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final muted =
+        theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final phone = s.toDrive;
+
+    final String place;
+    final String detail;
+    final List<Widget> actions;
+    if (phone) {
+      place = 'Google Drive (uygulama klasörü)';
+      if (s.driveConnected) {
+        detail = google.email == null ? 'Bağlı' : 'Hesap: ${google.email}';
+      } else if (!google.loaded || google.busy) {
+        detail = 'Google bağlantısı denetleniyor…';
+      } else {
+        detail = 'Henüz bağlı değil. Yedeklerken Google hesabını seçmen '
+            'istenecek.';
+      }
+      actions = [
+        if (google.loaded && !google.busy && !s.driveConnected)
+          TextButton(onPressed: google.connect, child: const Text('Bağlan')),
+      ];
+    } else {
+      place = 'Bu bilgisayarda';
+      detail = s.directory ?? '…';
+      actions = [
+        TextButton(
+          onPressed: () => _changeDirectory(context),
+          child: const Text('Klasörü değiştir'),
+        ),
+        TextButton(onPressed: _openDirectory, child: const Text('Klasörü aç')),
+      ];
+    }
+
+    final busy = s.running || (phone && google.busy);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(phone ? Icons.cloud_outlined : Icons.folder_outlined,
+                size: 28, color: scheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Yedeğin alınacağı yer', style: muted),
+                  const SizedBox(height: 2),
+                  Text(place,
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  SelectableText(detail, style: theme.textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ]),
+          if (actions.isNotEmpty)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(spacing: 4, children: actions),
+            )
+          else
+            const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48)),
+              onPressed: !s.loaded || busy ? null : () => _backupNow(context),
+              icon: busy
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.backup_outlined),
+              label: Text(s.running ? 'Yedek alınıyor…' : 'Şimdi yedekle'),
+            ),
+          ),
+          if (s.loaded && !s.hasPassword) ...[
+            const SizedBox(height: 6),
+            Text('İlk yedekte bir yedek parolası belirlemen istenecek.',
+                style: muted),
+          ],
+        ],
+      ),
+    );
   }
 
   @override
@@ -107,21 +240,8 @@ class _BackupDialog extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    phone
-                        ? 'Notların AES-256 ile şifreli bir ZIP arşivi olarak '
-                            'Google Drive\'ın uygulamaya özel klasörüne kaydedilir. '
-                            'Bu klasör Drive\'da görünmez; yedekleri buradan ya da '
-                            'bilgisayardaki Müsvedde\'den geri yükleyebilirsin. '
-                            'İçinde notların Markdown dosyaları olarak, klasör '
-                            'yapınla birlikte durur.'
-                        : 'Notların şifreli bir 7-Zip arşivi olarak aşağıdaki klasöre '
-                            'kaydedilir. Arşivi uygulama olmadan da 7-Zip ve yedek '
-                            'parolanla açabilirsin; içinde notların Markdown dosyaları '
-                            'olarak, klasör yapınla birlikte durur.',
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 16),
+                  _destination(context, s),
+                  const SizedBox(height: 12),
                   _StatusBox(service: s),
                   if (s.loaded && !phone && s.sevenZipPath == null) ...[
                     const SizedBox(height: 12),
@@ -134,48 +254,22 @@ class _BackupDialog extends StatelessWidget {
                       ),
                     ),
                   ],
+                  const SizedBox(height: 12),
+                  Text(
+                    phone
+                        ? 'Notlar AES-256 ile şifreli bir ZIP arşivi olarak '
+                            'Drive\'ın uygulamaya özel klasörüne kaydedilir. Bu '
+                            'klasör Drive\'da görünmez; yedekleri buradan ya da '
+                            'bilgisayardaki Müsvedde\'den geri yükleyebilirsin. '
+                            'İçinde notlar Markdown dosyaları olarak, klasör '
+                            'yapınla birlikte durur.'
+                        : 'Notlar şifreli bir 7-Zip arşivi olarak kaydedilir. '
+                            'Arşivi uygulama olmadan da 7-Zip ve yedek parolanla '
+                            'açabilirsin; içinde notlar Markdown dosyaları olarak, '
+                            'klasör yapınla birlikte durur.',
+                    style: muted,
+                  ),
                   const SizedBox(height: 20),
-                  if (phone) ...[
-                    Text('Google Drive',
-                        style: theme.textTheme.titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    if (s.driveConnected)
-                      Text(
-                        google.email == null
-                            ? 'Bağlı.'
-                            : 'Bağlı hesap: ${google.email}',
-                        style: theme.textTheme.bodyMedium,
-                      )
-                    else
-                      _Warning(
-                        text: 'Google Drive bağlı değil. Telefonda yedekler '
-                            'Drive\'a alınır; önce senkronizasyondan bağlan.',
-                        action: TextButton(
-                          onPressed: onOpenSync,
-                          child: const Text('Bağlan'),
-                        ),
-                      ),
-                    const SizedBox(height: 20),
-                  ] else ...[
-                    Text('Yedek klasörü',
-                        style: theme.textTheme.titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    SelectableText(s.directory ?? '…', style: theme.textTheme.bodyMedium),
-                    const SizedBox(height: 8),
-                    Wrap(spacing: 8, children: [
-                      OutlinedButton(
-                        onPressed: () => _changeDirectory(context),
-                        child: const Text('Klasörü değiştir'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _openDirectory,
-                        child: const Text('Klasörü aç'),
-                      ),
-                    ]),
-                    const SizedBox(height: 20),
-                  ],
                   Text('Yedek parolası',
                       style: theme.textTheme.titleSmall
                           ?.copyWith(fontWeight: FontWeight.w600)),
@@ -186,11 +280,11 @@ class _BackupDialog extends StatelessWidget {
                             'sonraki yedeklerde geçerli olur; eski yedekler eski '
                             'parolayla açılır.'
                         : phone
-                            ? 'Yedek almak için bir parola belirle. Bilgisayardaki '
-                                'Müsvedde\'de kullandığın yedek parolasını girersen '
-                                'iki cihazın yedekleri aynı parolayla açılır.'
-                            : 'Yedek almak için bir parola belirle. Arşivleri 7-Zip ile '
-                                'açarken bu parolayı gireceksin.',
+                            ? 'Henüz belirlenmedi. Bilgisayardaki Müsvedde\'de '
+                                'kullandığın yedek parolasını girersen iki cihazın '
+                                'yedekleri aynı parolayla açılır.'
+                            : 'Henüz belirlenmedi. Arşivleri 7-Zip ile açarken '
+                                'bu parolayı gireceksin.',
                     style: muted,
                   ),
                   const SizedBox(height: 8),
@@ -245,14 +339,6 @@ class _BackupDialog extends StatelessWidget {
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('Kapat'),
-            ),
-            FilledButton(
-              onPressed: s.canRun ? () => _backupNow(context) : null,
-              child: s.running
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Şimdi yedekle'),
             ),
           ],
         );
