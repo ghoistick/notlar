@@ -22,7 +22,32 @@ import 'folder_tree.dart';
 import 'home_state.dart';
 import 'note_actions.dart';
 
+/// Klasör ağacında açık olan klasörler.
+///
+/// Yalnızca bellekte tutulur: uygulama ilk açıldığında hepsi kapalı gelir;
+/// kilitlenip (otomatik kilit dahil) yeniden açıldığında bırakıldığı gibi
+/// kalır. Geniş düzendeki panel ile çekmecedeki panel aynı durumu paylaşır.
+final expandedFoldersProvider =
+    NotifierProvider<ExpandedFoldersNotifier, Set<String>>(
+        ExpandedFoldersNotifier.new);
+
+class ExpandedFoldersNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => const {};
+
+  void toggle(String id) => state =
+      state.contains(id) ? ({...state}..remove(id)) : {...state, id};
+
+  void expand(String id) {
+    if (!state.contains(id)) state = {...state, id};
+  }
+}
+
 /// Sol panel: görünümler, klasör ağacı, etiketler, arşiv ve çöp kutusu.
+///
+/// Üstteki başlık ve alttaki araçlar (İçe aktar, Kilit ve güvenlik,
+/// Senkronizasyon, Yedekleme, Hakkında) sabittir; aradaki liste kayar.
+/// Yükseklik çok azsa (yatay telefon) her şey tek liste olarak kayar.
 class Sidebar extends ConsumerStatefulWidget {
   /// Çekmece içinde açıldıysa, seçimden sonra çekmece kapanır.
   final bool inDrawer;
@@ -33,11 +58,19 @@ class Sidebar extends ConsumerStatefulWidget {
 }
 
 class _SidebarState extends ConsumerState<Sidebar> {
-  final _expanded = <String>{};
+  /// Bu yüksekliğin altında alt araçlar sabit tutulmaz.
+  static const _fixedFooterMinHeight = 460.0;
 
   void _select(NoteView view) {
     ref.read(homeProvider.notifier).selectView(view);
     if (widget.inDrawer) Navigator.of(context).pop();
+  }
+
+  /// Bir pencere açar; çekmecedeysek önce çekmeceyi kapatır.
+  void _openDialog(void Function(BuildContext context) show) {
+    final nav = Navigator.of(context);
+    if (widget.inDrawer) nav.pop();
+    show(nav.context);
   }
 
   @override
@@ -48,169 +81,200 @@ class _SidebarState extends ConsumerState<Sidebar> {
         data: (d) => d, loading: () => <Folder>[], error: (_, __) => <Folder>[]);
     final tags = ref.watch(tagsProvider).when(
         data: (d) => d, loading: () => <Tag>[], error: (_, __) => <Tag>[]);
+    final expanded = ref.watch(expandedFoldersProvider);
+    final foldersCollapsed =
+        ref.watch(layoutProvider.select((l) => l.foldersCollapsed));
+    final tagsCollapsed =
+        ref.watch(layoutProvider.select((l) => l.tagsCollapsed));
+    final layout = ref.read(layoutProvider.notifier);
 
-    final rows = flattenTree(buildFolderTree(folders), expanded: _expanded);
+    final rows = flattenTree(buildFolderTree(folders), expanded: expanded);
+    final rootCount = folders.where((f) => f.parentId == null).length;
+
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 4, 8),
+      child: Row(children: [
+        Expanded(
+          child: Text('Müsvedde',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w600)),
+        ),
+        const _ThemeMenu(),
+        IconButton(
+          tooltip: 'Kilitle (Ctrl+L)',
+          icon: const Icon(Icons.lock_outline, size: 20),
+          onPressed: () => lockApp(ref),
+        ),
+      ]),
+    );
+
+    // Kayan kısım: görünümler, klasörler, etiketler, arşiv, çöp kutusu.
+    final scrolling = <Widget>[
+      _NavRow(
+        icon: Icons.notes_outlined,
+        label: 'Tüm notlar',
+        selected: view == NoteView.all,
+        onTap: () => _select(NoteView.all),
+      ),
+      _NavRow(
+        icon: Icons.sticky_note_2_outlined,
+        label: 'Kısa notlar',
+        selected: view == NoteView.snippets,
+        onTap: () => _select(NoteView.snippets),
+      ),
+      _SectionHeader(
+        label: 'Klasörler',
+        collapsed: foldersCollapsed,
+        count: rootCount,
+        onToggle: layout.toggleFolders,
+        addTooltip: 'Yeni klasör',
+        onAdd: () => _newFolder(null),
+      ),
+      if (!foldersCollapsed) ...[
+        if (rows.isEmpty)
+          const _EmptyHint('Notlarını projelere ayırmak için klasör oluştur.'),
+        for (final r in rows) _folderRow(r, view, expanded),
+      ],
+      _SectionHeader(
+        label: 'Etiketler',
+        collapsed: tagsCollapsed,
+        count: tags.length,
+        onToggle: layout.toggleTags,
+        addTooltip: 'Yeni etiket',
+        onAdd: _newTag,
+      ),
+      if (!tagsCollapsed) ...[
+        if (tags.isEmpty)
+          const _EmptyHint('Etiketler klasörden bağımsız olarak notları gruplar.'),
+        for (final t in tags) _tagRow(t, view),
+      ],
+      const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Divider(),
+      ),
+      _NavRow(
+        icon: Icons.inventory_2_outlined,
+        label: 'Arşiv',
+        selected: view == NoteView.archive,
+        onTap: () => _select(NoteView.archive),
+      ),
+      _NavRow(
+        icon: Icons.delete_outline,
+        label: 'Çöp kutusu',
+        selected: view == NoteView.trash,
+        onTap: () => _select(NoteView.trash),
+      ),
+    ];
+
+    // Sabit alt kısım: araçlar ve ayarlar.
+    final footer = <Widget>[
+      _NavRow(
+        icon: Icons.move_to_inbox_outlined,
+        label: 'İçe aktar',
+        selected: false,
+        onTap: () => _openDialog(showImportDialog),
+      ),
+      _NavRow(
+        icon: Icons.shield_outlined,
+        label: 'Kilit ve güvenlik',
+        selected: false,
+        onTap: () => _openDialog(showSecurityDialog),
+      ),
+      ListenableBuilder(
+        listenable: Listenable.merge(
+            [ref.watch(googleAccountProvider), ref.watch(syncServiceProvider)]),
+        builder: (context, _) {
+          final google = ref.read(googleAccountProvider);
+          final sync = ref.read(syncServiceProvider);
+          final hasError = google.error != null || sync.lastError != null;
+          return _NavRow(
+            icon: sync.running
+                ? Icons.sync
+                : google.connected
+                    ? Icons.cloud_done_outlined
+                    : Icons.cloud_outlined,
+            iconColor: hasError ? Theme.of(context).colorScheme.error : null,
+            label: hasError ? 'Senkronizasyon: sorun var' : 'Senkronizasyon',
+            selected: false,
+            onTap: () => _openDialog(showSyncDialog),
+          );
+        },
+      ),
+      ListenableBuilder(
+        listenable: ref.watch(backupServiceProvider),
+        builder: (context, _) {
+          final backup = ref.read(backupServiceProvider);
+          return _NavRow(
+            icon: backup.running ? Icons.sync : Icons.backup_outlined,
+            iconColor: backup.needsAttention
+                ? Theme.of(context).colorScheme.error
+                : null,
+            label: backup.needsAttention
+                ? 'Yedekleme: ayar gerekli'
+                : 'Yedekleme',
+            selected: false,
+            onTap: () => _openDialog((ctx) => showBackupDialog(ctx, ref)),
+          );
+        },
+      ),
+      ListenableBuilder(
+        listenable: ref.watch(updateServiceProvider),
+        builder: (context, _) {
+          final update = ref.read(updateServiceProvider).available;
+          return _NavRow(
+            icon: update != null ? Icons.system_update_alt : Icons.info_outline,
+            iconColor:
+                update != null ? Theme.of(context).colorScheme.primary : null,
+            label: update != null ? 'Yeni sürüm: ${update.version}' : 'Hakkında',
+            selected: false,
+            onTap: () => _openDialog(showAboutUpdateDialog),
+          );
+        },
+      ),
+    ];
 
     return Material(
       color: theme.scaffoldBackgroundColor,
       child: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
-          children: [
+        child: LayoutBuilder(builder: (context, c) {
+          if (c.maxHeight < _fixedFooterMinHeight) {
+            return ListView(
+              padding: const EdgeInsets.fromLTRB(8, 12, 8, 16),
+              children: [
+                header,
+                ...scrolling,
+                const Divider(height: 9),
+                ...footer,
+              ],
+            );
+          }
+          return Column(children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 4, 8),
-              child: Row(children: [
-                Expanded(
-                  child: Text('Müsvedde',
-                      style: theme.textTheme.titleLarge
-                          ?.copyWith(fontWeight: FontWeight.w600)),
-                ),
-                const _ThemeMenu(),
-                IconButton(
-                  tooltip: 'Kilitle (Ctrl+L)',
-                  icon: const Icon(Icons.lock_outline, size: 20),
-                  onPressed: () => lockApp(ref),
-                ),
-              ]),
+              padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+              child: header,
             ),
-            _NavRow(
-              icon: Icons.notes_outlined,
-              label: 'Tüm notlar',
-              selected: view == NoteView.all,
-              onTap: () => _select(NoteView.all),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                children: scrolling,
+              ),
             ),
-            _NavRow(
-              icon: Icons.sticky_note_2_outlined,
-              label: 'Kısa notlar',
-              selected: view == NoteView.snippets,
-              onTap: () => _select(NoteView.snippets),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 10),
+              child: Column(children: footer),
             ),
-            _SectionHeader(
-              label: 'Klasörler',
-              addTooltip: 'Yeni klasör',
-              onAdd: () => _newFolder(null),
-            ),
-            if (rows.isEmpty)
-              const _EmptyHint('Notlarını projelere ayırmak için klasör oluştur.'),
-            for (final r in rows) _folderRow(r, view),
-            _SectionHeader(
-              label: 'Etiketler',
-              addTooltip: 'Yeni etiket',
-              onAdd: _newTag,
-            ),
-            if (tags.isEmpty)
-              const _EmptyHint('Etiketler klasörden bağımsız olarak notları gruplar.'),
-            for (final t in tags) _tagRow(t, view),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Divider(),
-            ),
-            _NavRow(
-              icon: Icons.inventory_2_outlined,
-              label: 'Arşiv',
-              selected: view == NoteView.archive,
-              onTap: () => _select(NoteView.archive),
-            ),
-            _NavRow(
-              icon: Icons.delete_outline,
-              label: 'Çöp kutusu',
-              selected: view == NoteView.trash,
-              onTap: () => _select(NoteView.trash),
-            ),
-            _NavRow(
-              icon: Icons.move_to_inbox_outlined,
-              label: 'İçe aktar',
-              selected: false,
-              onTap: () {
-                final nav = Navigator.of(context);
-                if (widget.inDrawer) nav.pop();
-                showImportDialog(nav.context);
-              },
-            ),
-            _NavRow(
-              icon: Icons.shield_outlined,
-              label: 'Kilit ve güvenlik',
-              selected: false,
-              onTap: () {
-                final nav = Navigator.of(context);
-                if (widget.inDrawer) nav.pop();
-                showSecurityDialog(nav.context);
-              },
-            ),
-            ListenableBuilder(
-              listenable: Listenable.merge(
-                  [ref.watch(googleAccountProvider), ref.watch(syncServiceProvider)]),
-              builder: (context, _) {
-                final google = ref.read(googleAccountProvider);
-                final sync = ref.read(syncServiceProvider);
-                final hasError = google.error != null || sync.lastError != null;
-                return _NavRow(
-                  icon: sync.running
-                      ? Icons.sync
-                      : google.connected
-                          ? Icons.cloud_done_outlined
-                          : Icons.cloud_outlined,
-                  iconColor: hasError ? Theme.of(context).colorScheme.error : null,
-                  label: hasError ? 'Senkronizasyon: sorun var' : 'Senkronizasyon',
-                  selected: false,
-                  onTap: () {
-                    final nav = Navigator.of(context);
-                    if (widget.inDrawer) nav.pop();
-                    showSyncDialog(nav.context);
-                  },
-                );
-              },
-            ),
-            
-            ListenableBuilder(
-              listenable: ref.watch(backupServiceProvider),
-              builder: (context, _) {
-                final backup = ref.read(backupServiceProvider);
-                return _NavRow(
-                  icon: backup.running ? Icons.sync : Icons.backup_outlined,
-                  iconColor: backup.needsAttention
-                      ? Theme.of(context).colorScheme.error
-                      : null,
-                  label: backup.needsAttention
-                      ? 'Yedekleme: ayar gerekli'
-                      : 'Yedekleme',
-                  selected: false,
-                  onTap: () {
-                    final nav = Navigator.of(context);
-                    if (widget.inDrawer) nav.pop();
-                    showBackupDialog(nav.context, ref);
-                  },
-                );
-              },
-            ),
-            ListenableBuilder(
-              listenable: ref.watch(updateServiceProvider),
-              builder: (context, _) {
-                final update = ref.read(updateServiceProvider).available;
-                return _NavRow(
-                  icon: update != null ? Icons.system_update_alt : Icons.info_outline,
-                  iconColor: update != null ? Theme.of(context).colorScheme.primary : null,
-                  label: update != null ? 'Yeni sürüm: ${update.version}' : 'Hakkında',
-                  selected: false,
-                  onTap: () {
-                    final nav = Navigator.of(context);
-                    if (widget.inDrawer) nav.pop();
-                    showAboutUpdateDialog(nav.context);
-                  },
-                );
-              },
-            ),
-          ],
-        ),
+          ]);
+        }),
       ),
     );
   }
 
   // --------------------------------------------------------------- Klasör
 
-  Widget _folderRow(FolderRow r, NoteView view) {
+  Widget _folderRow(FolderRow r, NoteView view, Set<String> expandedIds) {
     final f = r.folder;
-    final expanded = _expanded.contains(f.id);
+    final expanded = expandedIds.contains(f.id);
     final swatch = noteColorFor(f.color)?.swatch;
 
     return DragTarget<String>(
@@ -225,8 +289,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
           child: r.hasChildren
               ? InkResponse(
                   radius: 14,
-                  onTap: () => setState(() =>
-                      expanded ? _expanded.remove(f.id) : _expanded.add(f.id)),
+                  onTap: () => ref
+                      .read(expandedFoldersProvider.notifier)
+                      .toggle(f.id),
                   child: Icon(
                     expanded ? Icons.expand_more : Icons.chevron_right,
                     size: 18,
@@ -259,7 +324,13 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final id = await ref
         .read(repositoryProvider)
         .createFolder(name: name, parentId: parentId);
-    if (parentId != null) setState(() => _expanded.add(parentId));
+    if (parentId != null) {
+      ref.read(expandedFoldersProvider.notifier).expand(parentId);
+      // Bölüm katlıysa yeni klasör görünsün diye açılır.
+      if (ref.read(layoutProvider).foldersCollapsed) {
+        ref.read(layoutProvider.notifier).toggleFolders();
+      }
+    }
     _select(NoteView.folder(id));
   }
 
@@ -460,13 +531,21 @@ class _NavRow extends StatelessWidget {
   }
 }
 
+/// Klasörler / Etiketler başlığı. Başlığa tıklayınca bölüm katlanır;
+/// katlıyken öğe sayısı görünür. + düğmesi her durumda çalışır.
 class _SectionHeader extends StatelessWidget {
   final String label;
+  final bool collapsed;
+  final int count;
+  final VoidCallback onToggle;
   final String addTooltip;
   final VoidCallback onAdd;
 
   const _SectionHeader({
     required this.label,
+    required this.collapsed,
+    required this.count,
+    required this.onToggle,
     required this.addTooltip,
     required this.onAdd,
   });
@@ -474,15 +553,39 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final style = theme.textTheme.labelLarge
+        ?.copyWith(color: muted, fontWeight: FontWeight.w600);
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 18, 0, 4),
+      padding: const EdgeInsets.fromLTRB(0, 14, 0, 2),
       child: Row(children: [
         Expanded(
-          child: Text(
-            label,
-            style: theme.textTheme.labelLarge?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
+          child: Tooltip(
+            message: collapsed ? 'Bölümü aç' : 'Bölümü daralt',
+            waitDuration: const Duration(milliseconds: 600),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onToggle,
+              child: SizedBox(
+                height: 34,
+                child: Row(children: [
+                  const SizedBox(width: 4),
+                  Icon(collapsed ? Icons.chevron_right : Icons.expand_more,
+                      size: 18, color: muted),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(label,
+                        overflow: TextOverflow.ellipsis, style: style),
+                  ),
+                  if (collapsed && count > 0) ...[
+                    const SizedBox(width: 6),
+                    Text('$count',
+                        style: theme.textTheme.labelMedium
+                            ?.copyWith(color: muted)),
+                  ],
+                ]),
+              ),
             ),
           ),
         ),

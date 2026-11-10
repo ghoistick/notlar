@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/app_settings.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/format.dart';
@@ -15,6 +16,7 @@ import '../editor/format_toolbar.dart';
 import '../editor/markdown_controller.dart';
 import 'home_state.dart';
 import 'note_actions.dart';
+import 'pane_layout.dart';
 
 /// Not editörü.
 ///
@@ -592,6 +594,9 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     _readOnly = readOnly;
     final tint = tintFor(context, note.color);
     _body.theme = MarkdownTheme.of(context);
+    // LayoutBuilder içinde değil burada okunur: ref.watch build sırasında
+    // çağrılmalı.
+    final textMaxWidth = _textMaxWidth();
 
     return Material(
       color: tint ?? theme.colorScheme.surface,
@@ -612,7 +617,8 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
               _sideTocAvailable = c.maxWidth >= _sideTocMinWidth;
               final showSide = _sideTocAvailable && _tocOpen;
               return Row(children: [
-                Expanded(child: _content(theme, note, readOnly)),
+                Expanded(
+                    child: _content(theme, note, readOnly, textMaxWidth)),
                 if (showSide) ...[
                   const VerticalDivider(width: 1),
                   SizedBox(width: 240, child: _tocPanel()),
@@ -626,11 +632,21 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     );
   }
 
-  Widget _content(ThemeData theme, Note note, bool readOnly) {
+  /// Metin sütununun en büyük genişliği: odak modunda ayrı bir ayar
+  /// kullanılır. Telefonda (PaneHost yok) odak modu yoktur.
+  double _textMaxWidth() {
+    final (normal, focus, focusMode) = ref.watch(layoutProvider
+        .select((l) => (l.textWidth, l.focusTextWidth, l.focusMode)));
+    final inFocus = focusMode && PaneHost.maybeOf(context) != null;
+    return (inFocus ? focus : normal).maxWidth;
+  }
+
+  Widget _content(
+      ThemeData theme, Note note, bool readOnly, double maxWidth) {
     return Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
+        constraints: BoxConstraints(maxWidth: maxWidth),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
           child: Column(children: [
@@ -909,8 +925,11 @@ class _Toolbar extends ConsumerWidget {
             error: (_, __) => null);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
       child: Row(children: [
+        // Masaüstünde: menü, odak modu ve Görünüm menüsü.
+        const LayoutControls(),
+        const SizedBox(width: 8),
         if (folderName != null) ...[
           Icon(Icons.folder_outlined, size: 16, color: scheme.onSurfaceVariant),
           const SizedBox(width: 6),
@@ -1019,8 +1038,10 @@ class _TrashBanner extends ConsumerWidget {
     return Container(
       width: double.infinity,
       color: scheme.primaryContainer,
-      padding: const EdgeInsets.fromLTRB(20, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
       child: Row(children: [
+        const LayoutControls(),
+        const SizedBox(width: 12),
         Expanded(
           child: Text('Bu not çöp kutusunda. Düzenlemek için geri yükle.',
               style: TextStyle(color: scheme.onPrimaryContainer)),
@@ -1064,21 +1085,25 @@ class EmptyEditor extends ConsumerWidget {
     final theme = Theme.of(context);
     return Material(
       color: theme.colorScheme.surface,
-      child: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.edit_note, size: 44, color: theme.colorScheme.outline),
-          const SizedBox(height: 12),
-          Text('Bir not seç ya da yeni bir not oluştur.',
-              style: theme.textTheme.bodyLarge
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: () => createNoteInView(context, ref),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Yeni not'),
-          ),
-        ]),
-      ),
+      child: Stack(children: [
+        Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.edit_note, size: 44, color: theme.colorScheme.outline),
+            const SizedBox(height: 12),
+            Text('Bir not seç ya da yeni bir not oluştur.',
+                style: theme.textTheme.bodyLarge
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () => createNoteInView(context, ref),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Yeni not'),
+            ),
+          ]),
+        ),
+        // Odak modunda ya da paneller gizliyken de düzene dönülebilsin.
+        const Positioned(top: 6, left: 8, child: LayoutControls()),
+      ]),
     );
   }
 }
