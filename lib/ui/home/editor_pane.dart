@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -38,6 +39,14 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   final _body = MarkdownEditingController();
   final _titleFocus = FocusNode();
   final _bodyFocus = FocusNode();
+  final _bodyScroll = ScrollController();
+
+  /// Sütun imleçlerini çizen katmanın anahtarı (koordinat dönüşümü için).
+  final _bodyPaintKey = GlobalKey();
+  late final _columnRepaint = Listenable.merge([_body, _bodyScroll]);
+
+  /// Sütun seçimi açıkken metin alanının kendi imleci gizlenir.
+  bool _columnShown = false;
   final _find = TextEditingController();
   final _findFocus = FocusNode();
   final _replace = TextEditingController();
@@ -95,6 +104,11 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   void _onBodyFocus() => _body.setFocused(_bodyFocus.hasFocus);
 
   void _onChanged() {
+    final column = _body.hasColumnSelection;
+    if (mounted && column != _columnShown) {
+      setState(() => _columnShown = column);
+    }
+
     // Metin değiştiyse not içi arama sonuçlarını güncelle.
     if (_findOpen && _body.text != _lastFindText) _runFind(reveal: false);
 
@@ -129,6 +143,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     _body.dispose();
     _titleFocus.dispose();
     _bodyFocus.dispose();
+    _bodyScroll.dispose();
     _find.dispose();
     _findFocus.dispose();
     _replace.dispose();
@@ -142,6 +157,19 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     final ctx = _bodyFocus.context;
     final editable = ctx?.findAncestorStateOfType<EditableTextState>();
     editable?.bringIntoView(TextPosition(offset: offset));
+  }
+
+  RenderEditable? _bodyEditable() => _bodyFocus.context
+      ?.findAncestorStateOfType<EditableTextState>()
+      ?.renderEditable;
+
+  /// Alt+Shift+ok: sütun seçimi (Notepad++ tarzı).
+  void _extendColumn(int lines, int cols) {
+    _body.extendColumn(lines, cols);
+    final sel = _body.selection;
+    if (!sel.isValid) return;
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _bringIntoView(sel.extentOffset));
   }
 
   void _onBodyTap() {
@@ -166,6 +194,14 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             _body.toggleHeading(3),
         const SingleActivator(LogicalKeyboardKey.digit0, control: true): () =>
             _body.toggleHeading(0),
+        const SingleActivator(LogicalKeyboardKey.arrowDown,
+            alt: true, shift: true): () => _extendColumn(1, 0),
+        const SingleActivator(LogicalKeyboardKey.arrowUp,
+            alt: true, shift: true): () => _extendColumn(-1, 0),
+        const SingleActivator(LogicalKeyboardKey.arrowRight,
+            alt: true, shift: true): () => _extendColumn(0, 1),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft,
+            alt: true, shift: true): () => _extendColumn(0, -1),
       };
 
   Map<ShortcutActivator, VoidCallback> get _editorShortcuts => {
@@ -174,7 +210,11 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
         const SingleActivator(LogicalKeyboardKey.keyH, control: true): () =>
             _openFind(replace: true),
         const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (_findOpen) _closeFind();
+          if (_body.hasColumnSelection) {
+            _body.exitColumnSelection();
+          } else if (_findOpen) {
+            _closeFind();
+          }
         },
         const SingleActivator(LogicalKeyboardKey.period, control: true):
             _body.toggleFoldAtCaret,
@@ -626,20 +666,33 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             Expanded(
               child: CallbackShortcuts(
                 bindings: readOnly ? const {} : _formatShortcuts,
-                child: TextField(
-                  controller: _body,
-                  focusNode: _bodyFocus,
-                  readOnly: readOnly,
-                  expands: true,
-                  maxLines: null,
-                  minLines: null,
-                  keyboardType: TextInputType.multiline,
-                  textAlignVertical: TextAlignVertical.top,
-                  inputFormatters: [ListContinuationFormatter()],
-                  onTap: readOnly ? null : _onBodyTap,
-                  style: theme.textTheme.bodyLarge?.copyWith(height: 1.55),
-                  decoration: const InputDecoration.collapsed(
-                      hintText: 'Yazmaya başla…'),
+                child: CustomPaint(
+                  key: _bodyPaintKey,
+                  foregroundPainter: _ColumnCaretPainter(
+                    controller: _body,
+                    editable: _bodyEditable,
+                    boxKey: _bodyPaintKey,
+                    color: theme.textSelectionTheme.cursorColor ??
+                        theme.colorScheme.primary,
+                    repaint: _columnRepaint,
+                  ),
+                  child: TextField(
+                    controller: _body,
+                    focusNode: _bodyFocus,
+                    scrollController: _bodyScroll,
+                    readOnly: readOnly,
+                    showCursor: _columnShown ? false : null,
+                    expands: true,
+                    maxLines: null,
+                    minLines: null,
+                    keyboardType: TextInputType.multiline,
+                    textAlignVertical: TextAlignVertical.top,
+                    inputFormatters: [ListContinuationFormatter()],
+                    onTap: readOnly ? null : _onBodyTap,
+                    style: theme.textTheme.bodyLarge?.copyWith(height: 1.55),
+                    decoration: const InputDecoration.collapsed(
+                        hintText: 'Yazmaya başla…'),
+                  ),
                 ),
               ),
             ),
@@ -648,6 +701,47 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
       ),
     );
   }
+}
+
+// ------------------------------------------------------ Sütun seçimi imleçleri
+
+/// Sütun seçimindeki her satıra bir imleç çizer. Konumlar metin alanının
+/// kendi düzeninden alınır; kaydırma ve metin değişince yeniden çizilir.
+class _ColumnCaretPainter extends CustomPainter {
+  final MarkdownEditingController controller;
+  final RenderEditable? Function() editable;
+  final GlobalKey boxKey;
+  final Color color;
+
+  _ColumnCaretPainter({
+    required this.controller,
+    required this.editable,
+    required this.boxKey,
+    required this.color,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (!controller.hasColumnSelection) return;
+    final re = editable();
+    final box = boxKey.currentContext?.findRenderObject();
+    if (re == null || box == null || !re.attached || !re.hasSize) return;
+
+    final transform = re.getTransformTo(box);
+    final paint = Paint()..color = color;
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
+    for (final offset in controller.columnCaretOffsets()) {
+      final r = MatrixUtils.transformRect(
+          transform, re.getLocalRectForCaret(TextPosition(offset: offset)));
+      canvas.drawRect(Rect.fromLTWH(r.left, r.top, 2, r.height), paint);
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ColumnCaretPainter old) => old.color != color;
 }
 
 // --------------------------------------------------------- İçindekiler paneli
