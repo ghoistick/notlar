@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/text/checklist.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/format.dart';
@@ -375,7 +376,8 @@ class _NoteTile extends ConsumerWidget {
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: scheme.onSurfaceVariant, height: 1.35);
     final title = note.title.trim().isEmpty ? 'Başlıksız' : note.title;
-    final preview = notePreview(note.body);
+    final isChecklist = note.type == NoteType.checklist;
+    final preview = isChecklist ? '' : notePreview(note.body);
 
     final tile = Material(
       color: selected ? scheme.primaryContainer : Colors.transparent,
@@ -421,7 +423,10 @@ class _NoteTile extends ConsumerWidget {
                 const SizedBox(width: 8),
                 Text(formatShortDate(note.updatedAt), style: muted),
               ]),
-              if (headings.isNotEmpty) ...[
+              if (isChecklist) ...[
+                const SizedBox(height: 4),
+                _ChecklistSummary(body: note.body, style: muted),
+              ] else if (headings.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -471,7 +476,9 @@ class _SnippetCard extends ConsumerWidget {
     final scheme = theme.colorScheme;
     final tint = tintFor(context, note.color);
     final title = note.title.trim();
-    final body = notePreview(note.body, maxLength: 220);
+    final isChecklist = note.type == NoteType.checklist;
+    final body = isChecklist ? '' : notePreview(note.body, maxLength: 220);
+    final items = isChecklist ? Checklist.parse(note.body) : const <ChecklistEntry>[];
 
     final card = Material(
       color: tint ?? scheme.surface,
@@ -502,7 +509,10 @@ class _SnippetCard extends ConsumerWidget {
                   if (note.pinned)
                     Icon(Icons.push_pin, size: 14, color: scheme.primary),
                 ]),
-              if (title.isNotEmpty && body.isNotEmpty) const SizedBox(height: 4),
+              if (title.isNotEmpty && (body.isNotEmpty || items.isNotEmpty))
+                const SizedBox(height: 4),
+              if (items.isNotEmpty)
+                Expanded(child: _ChecklistCardItems(items: items)),
               if (body.isNotEmpty)
                 Expanded(
                   child: Text(
@@ -511,7 +521,7 @@ class _SnippetCard extends ConsumerWidget {
                     style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
                   ),
                 ),
-              if (title.isEmpty && body.isEmpty)
+              if (title.isEmpty && body.isEmpty && items.isEmpty)
                 Text('Boş kısa not',
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: scheme.onSurfaceVariant)),
@@ -525,6 +535,96 @@ class _SnippetCard extends ConsumerWidget {
       note: note,
       dragFeedback: _DragChip(label: title.isEmpty ? 'Kısa not' : title),
       child: card,
+    );
+  }
+}
+
+/// Liste notunun satırdaki özeti: "3/7" ve ilk işaretsiz maddeler.
+class _ChecklistSummary extends StatelessWidget {
+  final String body;
+  final TextStyle? style;
+  const _ChecklistSummary({required this.body, this.style});
+
+  @override
+  Widget build(BuildContext context) {
+    final items = Checklist.parse(body);
+    if (items.isEmpty) return const SizedBox.shrink();
+    final done = items.where((e) => e.checked).length;
+    final open = items
+        .where((e) => !e.checked && e.text.trim().isNotEmpty)
+        .map((e) => e.text.trim())
+        .take(4)
+        .join(', ');
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.only(top: 1, right: 6),
+        child: Icon(Icons.checklist, size: 15, color: style?.color),
+      ),
+      Text('$done/${items.length}', style: style),
+      if (open.isNotEmpty) ...[
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(open,
+              maxLines: 2, overflow: TextOverflow.ellipsis, style: style),
+        ),
+      ],
+    ]);
+  }
+}
+
+/// Kısa not kartında liste: önce işaretsiz maddeler kutucuklarıyla, altta
+/// ilerleme.
+class _ChecklistCardItems extends StatelessWidget {
+  final List<ChecklistEntry> items;
+  const _ChecklistCardItems({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final text = theme.textTheme.bodySmall?.copyWith(height: 1.3);
+    final open = items.where((e) => !e.checked).toList();
+    final done = items.length - open.length;
+
+    Widget line(ChecklistEntry e) => Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: Row(children: [
+            Icon(
+                e.checked
+                    ? Icons.check_box_outlined
+                    : Icons.check_box_outline_blank,
+                size: 14,
+                color: muted),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(e.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: e.checked
+                      ? text?.copyWith(
+                          color: muted, decoration: TextDecoration.lineThrough)
+                      : text),
+            ),
+          ]),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          // Kaydırılmayan liste: sığmayan maddeler taşma uyarısı vermeden
+          // kırpılır. İşaretliler yalnızca hepsi tamamlandıysa gösterilir.
+          child: ListView(
+            padding: EdgeInsets.zero,
+            physics: const NeverScrollableScrollPhysics(),
+            children: [
+              for (final e in (open.isEmpty ? items : open).take(8)) line(e),
+            ],
+          ),
+        ),
+        Text('$done/${items.length} tamamlandı',
+            style: text?.copyWith(color: muted)),
+      ],
     );
   }
 }

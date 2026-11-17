@@ -135,22 +135,72 @@ ImportNote noteFromMarkdown(
 }
 
 /// "---\nanahtar: değer\n---\n\ngövde\n" -> ({anahtar: değer}, "gövde")
+///
+/// Müsvedde'nin yazdığı biçimin yanında başka uygulamaların (Obsidian, Hugo
+/// vb.) basit YAML ön bilgisini de okur:
+///  - tek tırnaklı metin: 'Ali''nin notu'
+///  - tırnaksız satır içi liste: [iş, ev]
+///  - alt alta liste:  tags:\n  - iş\n  - ev
+///  - dosyanın sonunda biten ön bilgi (kapanış --- satırından sonra metin yok)
+/// İç içe yapılar (girintili anahtarlar) yok sayılır.
 (Map<String, Object?>, String) splitFrontMatter(String text) {
-  final t = text.replaceAll('\r\n', '\n');
+  var t = text.replaceAll('\r\n', '\n');
+  if (t.startsWith('\uFEFF')) t = t.substring(1);
   if (!t.startsWith('---\n')) return (const {}, t);
-  final end = t.indexOf('\n---\n', 3);
-  if (end < 0) return (const {}, t);
 
-  final header = t.substring(4, end);
-  var body = t.substring(end + 5);
+  var end = t.indexOf('\n---\n', 3);
+  final int bodyStart;
+  if (end >= 0) {
+    bodyStart = end + 5;
+  } else if (t.endsWith('\n---')) {
+    end = t.length - 4;
+    bodyStart = t.length;
+  } else {
+    return (const {}, t);
+  }
+
+  // "---\n---\n" gibi boş bir ön bilgide end, başlığın başından önce kalır.
+  final header = end > 4 ? t.substring(4, end) : '';
+  var body = t.substring(bodyStart);
   if (body.startsWith('\n')) body = body.substring(1);
   if (body.endsWith('\n')) body = body.substring(0, body.length - 1);
 
   final map = <String, Object?>{};
+  String? listKey; // değeri boş bırakılmış, altında "- öğe" beklenen anahtar
   for (final line in header.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
+
+    if (trimmed == '-' || trimmed.startsWith('- ')) {
+      if (listKey != null) {
+        final v = _yamlValue(trimmed.substring(1).trim());
+        if (v != null) {
+          final list = map[listKey];
+          if (list is List<Object?>) {
+            list.add(v);
+          } else {
+            map[listKey] = <Object?>[v];
+          }
+        }
+      }
+      continue;
+    }
+
+    // Girintili satır: iç içe yapı; desteklenmiyor.
+    if (line.startsWith(' ') || line.startsWith('\t')) {
+      listKey = null;
+      continue;
+    }
+
     final i = line.indexOf(':');
-    if (i <= 0) continue;
-    map[line.substring(0, i).trim()] = _yamlValue(line.substring(i + 1).trim());
+    if (i <= 0) {
+      listKey = null;
+      continue;
+    }
+    final key = line.substring(0, i).trim();
+    final raw = line.substring(i + 1).trim();
+    map[key] = _yamlValue(raw);
+    listKey = raw.isEmpty ? key : null;
   }
   return (map, body);
 }
@@ -159,10 +209,22 @@ Object? _yamlValue(String raw) {
   if (raw.isEmpty || raw == 'null' || raw == '~') return null;
   if (raw == 'true') return true;
   if (raw == 'false') return false;
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.substring(1, raw.length - 1).replaceAll("''", "'");
+  }
   if (raw.startsWith('"') || raw.startsWith('[')) {
     try {
       return jsonDecode(raw);
     } catch (_) {
+      // Tırnaksız liste: [iş, ev]
+      if (raw.startsWith('[') && raw.endsWith(']')) {
+        final inner = raw.substring(1, raw.length - 1).trim();
+        if (inner.isEmpty) return <Object?>[];
+        return [
+          for (final part in inner.split(','))
+            if (_yamlValue(part.trim()) case final Object v) v,
+        ];
+      }
       return raw;
     }
   }

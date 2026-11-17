@@ -8,10 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_settings.dart';
+import '../../core/text/checklist.dart';
 import '../../data/db/database.dart';
 import '../../data/repository/notes_repository.dart';
 import '../common/format.dart';
 import '../common/note_colors.dart';
+import '../editor/checklist_view.dart';
 import '../editor/format_toolbar.dart';
 import '../editor/markdown_controller.dart';
 import 'home_state.dart';
@@ -77,6 +79,10 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
   /// Not çöp kutusundaysa salt okunur; build içinde güncellenir.
   bool _readOnly = false;
 
+  /// Liste notu (type = checklist) mu; build içinde güncellenir. Liste
+  /// görünümünde biçim çubuğu, içindekiler ve not içi arama yoktur.
+  bool _isChecklist = false;
+
   @override
   void initState() {
     super.initState();
@@ -134,6 +140,45 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
     } catch (_) {
       _dirty = true; // veritabanı kapanmışsa (kilitleme sırasında)
     }
+  }
+
+  /// Not ↔ liste dönüşümü.
+  ///
+  /// Listeye çevirirken her dolu satır bir madde olur ("- [ ] …"); önceki
+  /// metin sürüm geçmişinde kalır. Metne çevirirken yalnızca tür değişir,
+  /// gövde Markdown kutucuklarıyla aynen kalır.
+  Future<void> _toggleChecklist(Note note) async {
+    await _flush();
+    final toList = note.type != NoteType.checklist;
+    try {
+      if (toList) {
+        final body = Checklist.fromText(_body.text);
+        await _repo.updateNote(
+            widget.noteId,
+            NoteChanges(
+                type: const Value(NoteType.checklist), body: Value(body)));
+        // Önce kayıtlı hal güncellenir; böylece aşağıdaki atama "değişiklik"
+        // sayılıp yeniden kaydedilmez.
+        _savedBody = body;
+        _body.text = body;
+      } else {
+        await _repo.updateNote(
+            widget.noteId, const NoteChanges(type: Value(NoteType.text)));
+      }
+    } catch (_) {
+      return; // veritabanı kapanmışsa (kilitleme sırasında)
+    }
+    if (!mounted || !toList || !_findOpen) return;
+    // Liste görünümünde arama çubuğu yok.
+    setState(() {
+      _findOpen = false;
+      _replaceMode = false;
+      _matches = const [];
+      _current = -1;
+      _findError = null;
+      _replaceInfo = null;
+    });
+    _body.setSearchMatches(const [], -1);
   }
 
   @override
@@ -206,7 +251,11 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             alt: true, shift: true): () => _extendColumn(0, -1),
       };
 
-  Map<ShortcutActivator, VoidCallback> get _editorShortcuts => {
+  /// Liste görünümünde boş: Ctrl+F not listesindeki aramaya gider.
+  Map<ShortcutActivator, VoidCallback> get _editorShortcuts =>
+      _isChecklist ? const {} : _textEditorShortcuts;
+
+  Map<ShortcutActivator, VoidCallback> get _textEditorShortcuts => {
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
             _openFind,
         const SingleActivator(LogicalKeyboardKey.keyH, control: true): () =>
@@ -592,6 +641,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
 
     final readOnly = note.deletedAt != null;
     _readOnly = readOnly;
+    _isChecklist = note.type == NoteType.checklist;
     final tint = tintFor(context, note.color);
     _body.theme = MarkdownTheme.of(context);
     // LayoutBuilder içinde değil burada okunur: ref.watch build sırasında
@@ -611,11 +661,13 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
               tocOpen: _tocOpen && _sideTocAvailable,
               onToggleToc: _toggleToc,
               onFind: _openFind,
+              onToggleChecklist: () => _toggleChecklist(note),
             ),
           Expanded(
             child: LayoutBuilder(builder: (context, c) {
               _sideTocAvailable = c.maxWidth >= _sideTocMinWidth;
-              final showSide = _sideTocAvailable && _tocOpen;
+              final showSide =
+                  !_isChecklist && _sideTocAvailable && _tocOpen;
               return Row(children: [
                 Expanded(
                     child: _content(theme, note, readOnly, textMaxWidth)),
@@ -665,7 +717,7 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
             ),
             const SizedBox(height: 4),
             _TagLine(noteId: note.id),
-            if (!readOnly) ...[
+            if (!readOnly && !_isChecklist) ...[
               const SizedBox(height: 6),
               Align(
                 alignment: Alignment.centerLeft,
@@ -675,10 +727,22 @@ class _EditorPaneState extends ConsumerState<EditorPane> {
                 ),
               ),
             ],
-            if (_findOpen) _findBar(theme, readOnly),
+            if (_findOpen && !_isChecklist) _findBar(theme, readOnly),
             const SizedBox(height: 6),
             const Divider(),
             const SizedBox(height: 10),
+            if (_isChecklist)
+              Expanded(
+                // Gövde yine _body üzerinden kaydedilir (otomatik kaydetme,
+                // kilitlemeden önce yazma aynı yoldan).
+                child: ChecklistView(
+                  key: ValueKey('checklist-${note.id}'),
+                  initialText: _body.text,
+                  readOnly: readOnly,
+                  onChanged: (text) => _body.text = text,
+                ),
+              )
+            else
             Expanded(
               child: CallbackShortcuts(
                 bindings: readOnly ? const {} : _formatShortcuts,
@@ -905,17 +969,20 @@ class _Toolbar extends ConsumerWidget {
   final bool tocOpen;
   final VoidCallback onToggleToc;
   final VoidCallback onFind;
+  final VoidCallback onToggleChecklist;
 
   const _Toolbar({
     required this.note,
     required this.tocOpen,
     required this.onToggleToc,
     required this.onFind,
+    required this.onToggleChecklist,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
+    final isChecklist = note.type == NoteType.checklist;
     final folderName = note.folderId == null
         ? null
         : ref.watch(foldersProvider).when(
@@ -941,16 +1008,23 @@ class _Toolbar extends ConsumerWidget {
         ],
         const Spacer(),
         IconButton(
-          tooltip: 'Notta ara (Ctrl+F)',
-          icon: const Icon(Icons.find_in_page_outlined),
-          onPressed: onFind,
+          tooltip: isChecklist ? 'Metne çevir' : 'Listeye çevir',
+          icon: Icon(isChecklist ? Icons.notes : Icons.checklist),
+          onPressed: onToggleChecklist,
         ),
-        IconButton(
-          tooltip: 'İçindekiler',
-          isSelected: tocOpen,
-          icon: const Icon(Icons.toc),
-          onPressed: onToggleToc,
-        ),
+        if (!isChecklist) ...[
+          IconButton(
+            tooltip: 'Notta ara (Ctrl+F)',
+            icon: const Icon(Icons.find_in_page_outlined),
+            onPressed: onFind,
+          ),
+          IconButton(
+            tooltip: 'İçindekiler',
+            isSelected: tocOpen,
+            icon: const Icon(Icons.toc),
+            onPressed: onToggleToc,
+          ),
+        ],
         IconButton(
           tooltip: note.pinned ? 'Sabitlemeyi kaldır' : 'Sabitle',
           isSelected: note.pinned,
